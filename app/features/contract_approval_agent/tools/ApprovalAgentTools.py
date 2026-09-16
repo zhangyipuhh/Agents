@@ -17,6 +17,7 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from app.shared.utils.store_schema import get_data_session_id, ApprovalResult
+from app.shared.utils.timezone import now_utc_aware  # 2026-09-16: 审批结果时间戳统一 UTC ISO
 
 
 class ClauseDetail(BaseModel):
@@ -97,7 +98,7 @@ def write_approval_result(approval_result: ApprovalResultInput, runtime: ToolRun
             host_session_id=data_session_id,
             status=status,
             result=result_text,
-            timestamp=datetime.now().isoformat(),
+            timestamp=now_utc_aware().isoformat(),
             details=details
         )
 

@@ -17,7 +17,19 @@
  */
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
-import OpsDetailWindow from '../OpsDetailWindow.vue'
+import OpsDetailWindow, {
+  webAppStatus,
+  webAppCpuColor,
+  webAppMemColor,
+  webAppRespColor,
+  pickAnomalyWebApps,
+  WEB_APP_CPU_WARN,
+  WEB_APP_CPU_CRIT,
+  WEB_APP_MEM_WARN_MB,
+  WEB_APP_MEM_CRIT_MB,
+  WEB_APP_RESP_WARN_MS,
+  WEB_APP_RESP_CRIT_MS,
+} from '../OpsDetailWindow.vue'
 
 const baseWin = { x: 0, y: 0, z: 1, max: false }
 
@@ -483,5 +495,148 @@ describe('OpsDetailWindow 详情页改造（2026-08-16）', () => {
     // .win-detail 类存在即可（具体宽度由 CSS 控制，本测试确保模板类名仍正确）
     expect(wrapper.find('.win-detail').exists()).toBe(true)
     expect(wrapper.find('.win.win-detail').exists()).toBe(true)
+  })
+})
+
+// ============================== 2026-09-16 晚:web 应用分组(webAppStatus + pickAnomalyWebApps + 详情分组) ==============================
+
+describe('OpsDetailWindow web 应用分组 (2026-09-16 晚)', () => {
+  it('test_webAppStatus_stopped_returns_err 任何 stopped 状态 → err', () => {
+    const app = { status: 'stopped', webAppCpuPct: 10, webAppMemMb: 256 }
+    expect(webAppStatus(app)).toBe('err')
+  })
+
+  it('test_webAppStatus_uses_threshold_crit_first 任一指标 ≥ CRIT → err', () => {
+    expect(webAppStatus({ status: 'running', webAppCpuPct: WEB_APP_CPU_CRIT })).toBe('err')
+    expect(webAppStatus({ status: 'running', webAppMemMb: WEB_APP_MEM_CRIT_MB })).toBe('err')
+    expect(webAppStatus({ status: 'running', webAppAvgResponseMs: WEB_APP_RESP_CRIT_MS })).toBe('err')
+  })
+
+  it('test_webAppStatus_warn_when_in_warn_range 但未达 CRIT → warn', () => {
+    expect(webAppStatus({ status: 'running', webAppCpuPct: WEB_APP_CPU_WARN })).toBe('warn')
+    expect(webAppStatus({ status: 'running', webAppMemMb: WEB_APP_MEM_WARN_MB })).toBe('warn')
+    expect(webAppStatus({ status: 'running', webAppAvgResponseMs: WEB_APP_RESP_WARN_MS })).toBe('warn')
+  })
+
+  it('test_webAppStatus_ok_when_all_under_warn 全 pass 区间 → ok', () => {
+    expect(webAppStatus({ status: 'running', webAppCpuPct: 10, webAppMemMb: 256, webAppAvgResponseMs: 50 })).toBe('ok')
+  })
+
+  it('test_webAppStatus_unknown_when_all_null 全部 null → unknown', () => {
+    expect(webAppStatus({ status: 'running' })).toBe('unknown')
+    expect(webAppStatus(null)).toBe('unknown')
+  })
+
+  it('test_pickAnomalyWebApps_returns_only_err_status', () => {
+    const webApps = [
+      { appName: 'app1', status: 'stopped', webAppCpuPct: 0 },
+      { appName: 'app2', status: 'running', webAppCpuPct: 50 },
+      { appName: 'app3', status: 'running', webAppCpuPct: 90 },
+      { appName: 'app4', status: 'running', webAppCpuPct: 10 },
+    ]
+    const anomalies = pickAnomalyWebApps(webApps)
+    expect(anomalies.length).toBe(2)
+    expect(anomalies.map(a => a.appName)).toEqual(['app1', 'app3'])
+  })
+
+  it('test_pickAnomalyWebApps_empty_or_invalid_input', () => {
+    expect(pickAnomalyWebApps([])).toEqual([])
+    expect(pickAnomalyWebApps(null)).toEqual([])
+    expect(pickAnomalyWebApps(undefined)).toEqual([])
+  })
+
+  it('test_webAppCpuColor_threshold_three_state', () => {
+    expect(webAppCpuColor(null)).toBe('#9aa3af')
+    expect(webAppCpuColor(0)).toBe('#1d9a40')
+    expect(webAppCpuColor(WEB_APP_CPU_WARN - 1)).toBe('#1d9a40')
+    expect(webAppCpuColor(WEB_APP_CPU_WARN)).toBe('#f59e0b')
+    expect(webAppCpuColor(WEB_APP_CPU_CRIT)).toBe('#ff453a')
+  })
+
+  it('test_webAppMemColor_threshold_three_state', () => {
+    expect(webAppMemColor(null)).toBe('#9aa3af')
+    expect(webAppMemColor(0)).toBe('#1d9a40')
+    expect(webAppMemColor(WEB_APP_MEM_WARN_MB - 1)).toBe('#1d9a40')
+    expect(webAppMemColor(WEB_APP_MEM_WARN_MB)).toBe('#f59e0b')
+    expect(webAppMemColor(WEB_APP_MEM_CRIT_MB)).toBe('#ff453a')
+  })
+
+  it('test_webAppRespColor_threshold_three_state', () => {
+    expect(webAppRespColor(null)).toBe('#9aa3af')
+    expect(webAppRespColor(0)).toBe('#1d9a40')
+    expect(webAppRespColor(WEB_APP_RESP_WARN_MS - 1)).toBe('#1d9a40')
+    expect(webAppRespColor(WEB_APP_RESP_WARN_MS)).toBe('#f59e0b')
+    expect(webAppRespColor(WEB_APP_RESP_CRIT_MS)).toBe('#ff453a')
+  })
+
+  it('test_webapp_section_renders_per_app_pcard', () => {
+    const webApps = [
+      { appName: 'shop-api', serverType: 'tomcat', port: 8080, status: 'running',
+        webAppCpuPct: 50, webAppMemMb: 1024, webAppQps: 12.3, webAppAvgResponseMs: 45 },
+      { appName: 'admin-portal', serverType: 'iis', port: 80, status: 'stopped',
+        webAppCpuPct: 0, webAppMemMb: 0, webAppQps: 0, webAppAvgResponseMs: 0 },
+    ]
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({ webApps }),
+      },
+    })
+    // webapp-section 渲染
+    expect(wrapper.find('.webapp-section').exists()).toBe(true)
+    // 2 张应用卡
+    const pcards = wrapper.findAll('.webapp-pcard')
+    expect(pcards.length).toBe(2)
+    // Tomcat / IIS 徽章
+    expect(pcards[0].find('.wap-type--tomcat').exists()).toBe(true)
+    expect(pcards[1].find('.wap-type--iis').exists()).toBe(true)
+    // port 展示
+    expect(pcards[0].find('.wap-port').text()).toBe(':8080')
+    expect(pcards[1].find('.wap-port').text()).toBe(':80')
+    // status 色块
+    expect(pcards[0].find('.wap-status--running').exists()).toBe(true)
+    expect(pcards[1].find('.wap-status--stopped').exists()).toBe(true)
+  })
+
+  it('test_webapp_section_falls_back_to_empty_when_no_web_apps', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({ webApps: [] }),
+      },
+    })
+    expect(wrapper.find('.webapp-section').exists()).toBe(true)
+    expect(wrapper.find('.webapp-empty').exists()).toBe(true)
+    expect(wrapper.find('.webapp-empty').text()).toContain('无 Web 应用数据')
+  })
+
+  it('test_webapp_anomaly_badge_shows_count', () => {
+    const webApps = [
+      { appName: 'a1', status: 'stopped', webAppCpuPct: 0 },
+      { appName: 'a2', status: 'running', webAppCpuPct: 90 },
+      { appName: 'a3', status: 'running', webAppCpuPct: 5 },
+    ]
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ webApps }) },
+    })
+    const badge = wrapper.find('.webapp-badge')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('3 个')
+    expect(badge.text()).toContain('2 个异常')
+    expect(badge.classes()).toContain('err')
+  })
+
+  it('test_webapp_badge_ok_when_all_pass', () => {
+    const webApps = [
+      { appName: 'a1', status: 'running', webAppCpuPct: 10 },
+      { appName: 'a2', status: 'running', webAppCpuPct: 20 },
+    ]
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ webApps }) },
+    })
+    const badge = wrapper.find('.webapp-badge')
+    expect(badge.text()).toContain('2 个')
+    expect(badge.text()).not.toContain('异常')
+    expect(badge.classes()).toContain('ok')
   })
 })

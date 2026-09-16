@@ -40,6 +40,7 @@ from app.shared.utils.server_inspection_record_service import (
     ServerInspectionPermissionError,
     ServerInspectionRecordService,
 )
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16
 
 
 router = APIRouter(
@@ -250,7 +251,8 @@ async def collect(
         schedule_name="manual-collect",
         script_args={"server_list": business_names},
         log_logger=logger,
-        started_at=datetime.now(),
+        # 2026-09-16: 写 TIMESTAMP 朴素列,落北京 naive
+        started_at=now_asia_shanghai_naive(),
         trigger_type="manual",
         devops_server_service=devops_service,
         server_inspection_record_service=service,

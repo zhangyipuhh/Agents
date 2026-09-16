@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Optional, Dict, List
 
 from app.core.database import DatabasePool, register_schema
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16: 路径/字段用北京日
 
 
 @register_schema
@@ -125,7 +126,8 @@ class ProjectDB:
             raise ValueError("user_id / name 均不可为空")
         # 2026-07-06 修正：项目是独立实体，uuid 不再强制等于 session_id
         project_uuid = uuid or str(uuid_module.uuid4())
-        now = datetime.now()
+        # 2026-09-16: 用北京日生成相对路径,避免北京 0-8 点创建项目落到前一天目录
+        now = now_asia_shanghai_naive()
         relative_path = relative_path or f"data/project/{now.year}/{now.month:02d}/{now.day:02d}/{project_uuid}"
         new_id: Optional[int] = None
 
@@ -188,12 +190,13 @@ class ProjectDB:
         with cls._lock:
             for project_id, proj in cls._memory_cache.items():
                 if not proj.get('relative_path'):
-                    created_at = proj.get('created_at') or datetime.now()
+                    # 2026-09-16: 用北京日兜底路径
+                    created_at = proj.get('created_at') or now_asia_shanghai_naive()
                     if isinstance(created_at, str):
                         try:
                             created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
                         except ValueError:
-                            created_at = datetime.now()
+                            created_at = now_asia_shanghai_naive()
                     backfill_path = f"data/project/{created_at.year}/{created_at.month:02d}/{created_at.day:02d}/{proj['uuid']}"
                     proj['relative_path'] = backfill_path
                     need_update.append((backfill_path, project_id))
@@ -359,7 +362,8 @@ class ProjectDB:
         if not project:
             return None
 
-        now = datetime.now()
+        # 2026-09-16: updated_at 用北京 naive
+        now = now_asia_shanghai_naive()
 
         # 更新数据库
         if cls.is_enabled():

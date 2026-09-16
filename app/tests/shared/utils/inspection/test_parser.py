@@ -1058,3 +1058,180 @@ def test_parse_windows_powershell_disks_array_with_escaped_backslashes():
     by_key = {f.key: f for f in evaluation.fields if f.key != "disk_used_pct"}
     assert by_key["uptime_hours"].status == "unassessed"
     assert by_key["uptime_hours"].value == 142.5
+
+
+# ---------------------------------------------------------------------------
+# 19. 2026-09-16 晚:web_apps 数组展开(评估器多键 _ARRAY_EXPANSION_KEYS)
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_inspection_fields_expands_web_apps_array_when_top_level_missing():
+    """web_apps 数组存在且顶层缺 web_app_cpu_pct 时, 对每个 web 应用重复评估规则。
+
+    2026-09-16 晚:元素 key 名与规则 key 名一致(web_app_cpu_pct),
+    这是与 disk_used_pct 数组展开同形态的契约:元素 key = 规则 key。
+
+    断言:
+        - 4 条 web_app_cpu_pct 字段结果, 顺序与 web_apps 数组顺序一致;
+        - 每条 message 携带该应用的 app_name 上下文("应用 <name>");
+        - status 与单条 high 阈值规则一致;
+        - 整体 status 由最坏状态决定(本例 app2=88 > crit=85 → crit)。
+    """
+    rules = normalize_inspection_fields([
+        {"key": "web_app_cpu_pct", "name_zh": "Web 应用 CPU", "unit": "%",
+         "direction": "high", "warn": 60, "crit": 85},
+    ])
+    parsed_values = {
+        "web_apps": [
+            {"app_name": "shop-frontend", "server_type": "tomcat",
+             "port": 8080, "status": "running", "web_app_cpu_pct": 12.5, "web_app_mem_mb": 256},
+            {"app_name": "shop-api", "server_type": "tomcat",
+             "port": 8080, "status": "running", "web_app_cpu_pct": 88.0, "web_app_mem_mb": 1024},
+            {"app_name": "admin-portal", "server_type": "tomcat",
+             "port": 8080, "status": "running", "web_app_cpu_pct": 65.0, "web_app_mem_mb": 512},
+            {"app_name": "legacy-app", "server_type": "tomcat",
+             "port": 8080, "status": "stopped", "web_app_cpu_pct": 0.0, "web_app_mem_mb": 0},
+        ],
+    }
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+
+    assert evaluation.status == "crit"
+    assert len(evaluation.fields) == 4
+    by_index = list(evaluation.fields)
+    # 顺序与 web_apps 数组一致
+    assert by_index[0].message == "应用 shop-frontend"
+    assert by_index[0].value == 12.5
+    assert by_index[0].status == "pass"
+    # app2 cpu=88 触发 crit
+    assert by_index[1].message == "应用 shop-api"
+    assert by_index[1].status == "crit"
+    # app3 cpu=65 触发 warn
+    assert by_index[2].message == "应用 admin-portal"
+    assert by_index[2].status == "warn"
+    # app4 stopped,cpu=0 → pass
+    assert by_index[3].message == "应用 legacy-app"
+    assert by_index[3].status == "pass"
+
+
+def test_evaluate_inspection_fields_disks_array_still_works_after_web_apps_added():
+    """回归基线:disks 数组展开路径必须仍工作(向后兼容)。"""
+    rules = normalize_inspection_fields([
+        {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+         "direction": "high", "warn": 80, "crit": 90},
+    ])
+    parsed_values = {
+        "disks": [
+            {"mount": "/", "disk_used_pct": 28, "disk_type": "ssd"},
+            {"mount": "/data", "disk_used_pct": 92, "disk_type": "hdd"},
+        ],
+    }
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+    assert evaluation.status == "crit"
+    by_index = list(evaluation.fields)
+    # ssd 介质但 disk_used_pct 规则无 ssd_warn → 走 base
+    assert by_index[0].value == 28
+    assert by_index[0].status == "pass"
+    assert by_index[0].message == "磁盘 /"
+    # hdd 介质 92 > crit 90
+    assert by_index[1].status == "crit"
+    assert by_index[1].message == "磁盘 /data"
+
+
+def test_array_expansion_priority_web_apps_before_disks():
+    """web_apps 与 disks 同存时, 评估器按 _ARRAY_EXPANSION_KEYS 顺序优先 web_apps。"""
+    rules = normalize_inspection_fields([
+        {"key": "web_app_cpu_pct", "name_zh": "Web 应用 CPU", "unit": "%",
+         "direction": "high", "warn": 60, "crit": 85},
+        {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+         "direction": "high", "warn": 80, "crit": 90},
+    ])
+    parsed_values = {
+        "web_apps": [
+            {"app_name": "shop", "web_app_cpu_pct": 30.0, "web_app_mem_mb": 256},
+        ],
+        "disks": [
+            {"mount": "/", "disk_used_pct": 95},
+        ],
+    }
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+    # web_apps 优先(顺序在 _ARRAY_EXPANSION_KEYS 第一位)→ web_app_cpu_pct 走 web_apps
+    # disk_used_pct 仍走 disks(自身专属数组键)
+    by_key = {}
+    for f in evaluation.fields:
+        by_key.setdefault(f.key, []).append(f)
+    assert len(by_key["web_app_cpu_pct"]) == 1
+    assert by_key["web_app_cpu_pct"][0].message == "应用 shop"
+    assert by_key["web_app_cpu_pct"][0].status == "pass"
+    # 整体 crit 由 disk_used_pct 触发(/=95 > crit 90)
+    assert evaluation.status == "crit"
+
+
+def test_web_apps_array_with_disk_type_field_still_works():
+    """web_apps 元素携带 disk_type 字段(脚本误带)不影响 web 路径评估。"""
+    rules = normalize_inspection_fields([
+        {"key": "web_app_cpu_pct", "name_zh": "Web 应用 CPU", "unit": "%",
+         "direction": "high", "warn": 60, "crit": 85},
+    ])
+    parsed_values = {
+        "web_apps": [
+            # 元素误带 disk_type 字段; web 路径无 ssd_warn 规则,直接走 base
+            {"app_name": "shop", "web_app_cpu_pct": 50.0, "web_app_mem_mb": 256, "disk_type": "ssd"},
+        ],
+    }
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+    assert len(evaluation.fields) == 1
+    assert evaluation.fields[0].status == "pass"
+    # 50 < warn=60, base 路径生效
+    assert evaluation.status == "pass"
+
+
+def test_web_apps_array_expansion_status_propagation():
+    """web_apps 多条记录状态取最坏(crit > warn > pass), 与 disks 路径一致。"""
+    rules = normalize_inspection_fields([
+        {"key": "web_app_mem_mb", "name_zh": "Web 应用内存", "unit": "MB",
+         "direction": "high", "warn": 2048, "crit": 4096},
+    ])
+    parsed_values = {
+        "web_apps": [
+            {"app_name": "app1", "web_app_mem_mb": 100, "web_app_cpu_pct": 5},
+            {"app_name": "app2", "web_app_mem_mb": 3000, "web_app_cpu_pct": 60},  # warn
+            {"app_name": "app3", "web_app_mem_mb": 5000, "web_app_cpu_pct": 90},  # crit
+        ],
+    }
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+    assert evaluation.status == "crit"
+    by_index = list(evaluation.fields)
+    assert by_index[0].status == "pass"
+    assert by_index[1].status == "warn"
+    assert by_index[2].status == "crit"
+    # 每条 message 用 app_name 上下文
+    assert by_index[0].message == "应用 app1"
+    assert by_index[1].message == "应用 app2"
+    assert by_index[2].message == "应用 app3"
+
+
+def test_web_apps_array_empty_marks_crit_with_web_apps_key_in_message():
+    """web_apps 数组为空时, 字段以单条 crit 占位, message 含「web_apps 数组为空」。"""
+    rules = normalize_inspection_fields([
+        {"key": "web_app_qps", "name_zh": "Web 应用 QPS", "unit": "req/s",
+         "direction": "high", "warn": 5000, "crit": 10000},
+    ])
+    parsed_values = {"web_apps": []}
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+    assert evaluation.status == "crit"
+    assert len(evaluation.fields) == 1
+    field_result = evaluation.fields[0]
+    assert field_result.key == "web_app_qps"
+    assert field_result.status == "crit"
+    # 2026-09-16 晚:多键化后, 占位消息含实际命中的数组键名(web_apps)
+    assert "web_apps 数组为空" in field_result.message
+
+
+def test_array_expansion_keys_exported_in_parser_module():
+    """_ARRAY_EXPANSION_KEYS 必须在 parser 模块导出, 顺序 web_apps → disks。"""
+    from app.shared.utils.inspection import parser as parser_mod
+    assert hasattr(parser_mod, "_ARRAY_EXPANSION_KEYS")
+    assert parser_mod._ARRAY_EXPANSION_KEYS == ("web_apps", "disks")
+    # 旧 _DISKS_ARRAY_KEY 常量已移除(避免误用);如存在则必须为 None 或兼容值
+    legacy = getattr(parser_mod, "_DISKS_ARRAY_KEY", None)
+    assert legacy is None, "_DISKS_ARRAY_KEY 必须删除以避免误导后续维护"

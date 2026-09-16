@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.core.tools.events import create_tool_event
 from app.shared.tools.registry import register_tool
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16: 字符串/文件名生成用北京
 
 logger = logging.getLogger(__name__)
 
@@ -1029,7 +1030,7 @@ def manage_project_log(
                     "|---|---|---|---|---|\n"
                 )
                 log_path.write_text(header, encoding="utf-8")
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now = now_asia_shanghai_naive().strftime("%Y-%m-%d %H:%M:%S")
             row = f"| {now} | project | {operation} | {content} | .project/{project_id}/ |\n"
             with log_path.open("a", encoding="utf-8") as f:
                 f.write(row)
@@ -1131,7 +1132,7 @@ def append_change_log(
                 "|---|---|---|---|---|---|\n"
             )
             log_path.write_text(header, encoding="utf-8")
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_asia_shanghai_naive().strftime("%Y-%m-%d")
         row = f"| {today} | {project_id} | 追加 | - | {record} | project-agent |\n"
         with log_path.open("a", encoding="utf-8") as f:
             f.write(row)
@@ -1262,7 +1263,7 @@ def generate_project_docx(
         writer, tool_name, tool_call_id, 2, 3, "生成 Word 文档"
     )
 
-    now_str = datetime.now().strftime("%Y年%m月%d日")
+    now_str = now_asia_shanghai_naive().strftime("%Y年%m月%d日")
     cover = CoverConfig.from_legacy(
         title=title,
         date_text=f"生成日期：{now_str}",
@@ -1290,7 +1291,7 @@ def generate_project_docx(
         writer, tool_name, tool_call_id, 3, 3, "保存文件"
     )
 
-    file_name = datetime.now().strftime("%Y%m%d_%H%M%S") + ".docx"
+    file_name = now_asia_shanghai_naive().strftime("%Y%m%d_%H%M%S") + ".docx"
     download_dir = Path("data/download") / session_id
     download_dir.mkdir(parents=True, exist_ok=True)
     file_path = download_dir / file_name

@@ -65,6 +65,7 @@ from app.scripts.ops.ops_report import (
 from app.scripts.registry import register_script
 from app.scripts.server_ops import run_server_ops
 from app.shared.utils.report.word.generator import WordReportGenerator
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16
 
 
 # 服务器级巡检状态中文映射(与 server_ops._INSPECTION_STATUS_ZH 对齐)。
@@ -253,7 +254,8 @@ async def run(context: ScriptContext) -> "ScriptResult":
         docx_path = None
 
     # 邮件正文
-    finished_at = datetime.now()
+    # 2026-09-16: 邮件报告里用,落北京
+    finished_at = now_asia_shanghai_naive()
     body = build_ops_email_body(
         summary=summary,
         alerts=alerts,

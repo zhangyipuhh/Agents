@@ -202,6 +202,94 @@ export function formatDuration(ms) {
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(2)}s`
 }
+
+// ============================== 2026-09-16 晚:web 应用分组 + 异常 ==============================
+
+/**
+ * 2026-09-16 晚:Web 应用异常检测阈值(与 inspection_fields web_app_* 规则对齐)。
+ */
+export const WEB_APP_CPU_WARN = 60
+export const WEB_APP_CPU_CRIT = 85
+export const WEB_APP_MEM_WARN_MB = 2048
+export const WEB_APP_MEM_CRIT_MB = 4096
+export const WEB_APP_RESP_WARN_MS = 500
+export const WEB_APP_RESP_CRIT_MS = 2000
+
+/**
+ * 2026-09-16 晚:Web 应用 CPU 着色(三态:绿/黄/红,黄是 warn 区段)。
+ *   - null / 非数字 → 灰色
+ *   - ≥ CRIT → 红
+ *   - ≥ WARN → 黄
+ *   - < WARN → 绿
+ */
+export function webAppCpuColor(v) {
+  if (v == null || typeof v !== 'number') return '#9aa3af'
+  if (v >= WEB_APP_CPU_CRIT) return '#ff453a'
+  if (v >= WEB_APP_CPU_WARN) return '#f59e0b'
+  return '#1d9a40'
+}
+
+/**
+ * 2026-09-16 晚:Web 应用内存着色(MB 单位,三态)。
+ */
+export function webAppMemColor(v) {
+  if (v == null || typeof v !== 'number') return '#9aa3af'
+  if (v >= WEB_APP_MEM_CRIT_MB) return '#ff453a'
+  if (v >= WEB_APP_MEM_WARN_MB) return '#f59e0b'
+  return '#1d9a40'
+}
+
+/**
+ * 2026-09-16 晚:Web 应用响应时间着色(ms 单位,三态)。
+ */
+export function webAppRespColor(v) {
+  if (v == null || typeof v !== 'number') return '#9aa3af'
+  if (v >= WEB_APP_RESP_CRIT_MS) return '#ff453a'
+  if (v >= WEB_APP_RESP_WARN_MS) return '#f59e0b'
+  return '#1d9a40'
+}
+
+/**
+ * 2026-09-16 晚:Web 应用 LED 状态(用于分区头部的红/绿/灰圆点)。
+ *   - stopped → err(红,运维关注)
+ *   - 任一指标 ≥ CRIT → err
+ *   - 任一指标 ≥ WARN → warn
+ *   - 全 pass 或全部 null → ok(灰/绿)
+ *   - 字段全部缺失 → unknown(灰)
+ *
+ * @param {object} app 后端 web_apps 元素映射后的对象
+ * @returns {'ok'|'warn'|'err'|'unknown'}
+ */
+export function webAppStatus(app) {
+  if (!app) return 'unknown'
+  if ((app.status || '').toLowerCase() === 'stopped') return 'err'
+  const cpu = app.webAppCpuPct
+  const mem = app.webAppMemMb
+  const resp = app.webAppAvgResponseMs
+  if (cpu == null && mem == null && resp == null) return 'unknown'
+  if ((typeof cpu === 'number' && cpu >= WEB_APP_CPU_CRIT)
+    || (typeof mem === 'number' && mem >= WEB_APP_MEM_CRIT_MB)
+    || (typeof resp === 'number' && resp >= WEB_APP_RESP_CRIT_MS)) {
+    return 'err'
+  }
+  if ((typeof cpu === 'number' && cpu >= WEB_APP_CPU_WARN)
+    || (typeof mem === 'number' && mem >= WEB_APP_MEM_WARN_MB)
+    || (typeof resp === 'number' && resp >= WEB_APP_RESP_WARN_MS)) {
+    return 'warn'
+  }
+  return 'ok'
+}
+
+/**
+ * 2026-09-16 晚:Web 应用异常应用列表(用于详情页「异常应用」紧凑展示)。
+ *
+ * @param {Array} webApps ServerItem.webApps 列表
+ * @returns {Array} status=err 的应用列表(顺序与原数组一致)
+ */
+export function pickAnomalyWebApps(webApps) {
+  if (!Array.isArray(webApps)) return []
+  return webApps.filter(a => webAppStatus(a) === 'err')
+}
 </script>
 
 <script setup>
@@ -238,6 +326,10 @@ const hasDisks = computed(() => Array.isArray(props.server.disks) && props.serve
 
 /** 按真实 host_disk/disk_index 归组后的物理磁盘列表。 */
 const diskGroups = computed(() => groupDisksByPhysicalDisk(props.server.disks))
+
+// 2026-09-16 晚:web-server 段 web_apps 数组 → 详情页 Web 应用分组
+const hasWebApps = computed(() => Array.isArray(props.server.webApps) && props.server.webApps.length > 0)
+const webAppsAnomalyCount = computed(() => pickAnomalyWebApps(props.server.webApps).length)
 </script>
 
 <template>
@@ -309,6 +401,54 @@ const diskGroups = computed(() => groupDisksByPhysicalDisk(props.server.disks))
           </div>
         </div>
         <div v-else class="disk-empty">无磁盘数据</div>
+      </div>
+
+      <!-- 2026-09-16 晚:Web 应用分组(与磁盘分组视觉对齐,grid 布局每个应用一张卡)
+           数据源 server.webApps(由 OpsConsoleApp.mapSnapshotToServer 扁平化透出)
+           每张卡:app_name + Tomcat/IIS 徽章 + port + status 色块 + 4 联指标条
+           (CPU% / 内存MB / QPS / 平均响应时间ms)
+           LED 颜色由 webAppStatus 阈值统一判定 -->
+      <div class="webapp-section">
+        <div class="webapp-title">
+          Web 应用
+          <span v-if="hasWebApps" class="webapp-badge" :class="webAppsAnomalyCount > 0 ? 'err' : 'ok'">
+            {{ server.webApps.length }} 个{{ webAppsAnomalyCount > 0 ? ' · ' + webAppsAnomalyCount + ' 个异常' : '' }}
+          </span>
+        </div>
+        <div v-if="hasWebApps" class="webapp-groups">
+          <div v-for="app in server.webApps" :key="app.appName + '|' + app.port + '|' + app.serverType" class="webapp-pcard">
+            <div class="webapp-pcard-head">
+              <OpsServerIcon :status="webAppStatus(app)" :size="14" />
+              <span class="wap-name">{{ app.appName }}</span>
+              <span class="wap-type" :class="'wap-type--' + (app.serverType || 'unknown')">
+                {{ (app.serverType || '?').toUpperCase() }}
+              </span>
+              <span v-if="app.port != null" class="wap-port">:{{ app.port }}</span>
+              <span class="wap-status" :class="'wap-status--' + (app.status || 'unknown')">
+                {{ app.status || 'unknown' }}
+              </span>
+            </div>
+            <div class="webapp-metrics">
+              <div class="dg-m">
+                <span class="dg-m-label">CPU</span>
+                <span class="dg-m-value" :style="{ color: webAppCpuColor(app.webAppCpuPct) }">{{ fmtPct(app.webAppCpuPct) }}</span>
+              </div>
+              <div class="dg-m">
+                <span class="dg-m-label">内存</span>
+                <span class="dg-m-value" :style="{ color: webAppMemColor(app.webAppMemMb) }">{{ app.webAppMemMb != null ? app.webAppMemMb + 'MB' : '-' }}</span>
+              </div>
+              <div class="dg-m">
+                <span class="dg-m-label">QPS</span>
+                <span class="dg-m-value">{{ app.webAppQps != null ? app.webAppQps : '-' }}</span>
+              </div>
+              <div class="dg-m">
+                <span class="dg-m-label">响应</span>
+                <span class="dg-m-value" :style="{ color: webAppRespColor(app.webAppAvgResponseMs) }">{{ app.webAppAvgResponseMs != null ? app.webAppAvgResponseMs + 'ms' : '-' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="webapp-empty">无 Web 应用数据</div>
       </div>
     </div>
   </div>

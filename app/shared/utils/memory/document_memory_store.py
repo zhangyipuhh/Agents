@@ -10,9 +10,10 @@ Date: 2026-03-05
 Author: AI Assistant
 """
 import uuid
-from datetime import datetime
 from typing import List, Dict, Any, Optional
 from langgraph.store.memory import InMemoryStore
+
+from app.shared.utils.timezone import now_utc_aware  # 2026-09-16: 内存 JSON 时间戳统一 UTC ISO
 
 
 class DocumentMemoryStore:
@@ -62,7 +63,7 @@ class DocumentMemoryStore:
                 "file_type": file_type,
                 "content": content,
                 "file_name": file_name,
-                "created_at": datetime.now().isoformat()  # 更新创建时间
+                "created_at": now_utc_aware().isoformat()  # 2026-09-16: UTC ISO
             })
         # 如果文档不存在，创建新的文档记录并添加到文件列表
         else:
@@ -71,7 +72,7 @@ class DocumentMemoryStore:
                 "file_type": file_type,
                 "content": content,
                 "file_name": file_name,
-                "created_at": datetime.now().isoformat()  # 记录创建时间
+                "created_at": now_utc_aware().isoformat()  # 2026-09-16: UTC ISO
             }
             session_data["files"].append(new_file)
 

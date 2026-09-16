@@ -30,6 +30,7 @@ from langgraph.store.memory import InMemoryStore
 
 from app.features.contract_document_agent.DocAgent import DocAgent
 from app.shared.utils.memory import get_async_checkpointer
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16
 
 
 logging.basicConfig(
@@ -72,7 +73,7 @@ class ChatHistory:
         self.history.append({
             "role": role,
             "content": content,
-            "timestamp": timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": timestamp or now_asia_shanghai_naive().strftime("%Y-%m-%d %H:%M:%S")
         })
     
     def get_history(self) -> List[Dict[str, Any]]:

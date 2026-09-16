@@ -31,6 +31,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
 from app.core.tools.events import create_tool_event
+from app.shared.utils.timezone import now_utc_aware  # 2026-09-16: 事件时间戳统一 UTC ISO
 
 logger = logging.getLogger(__name__)
 
@@ -835,7 +836,8 @@ class MCPToolToLangChainAdapter(BaseTool):
         tool_call_id = self._get_tool_call_id(config)
         writer = self._get_writer()
         # 记录开始时间用于计算执行时长
-        start_time = datetime.now()
+        # 2026-09-16: 与 events.create_tool_event / now_utc_aware().timestamp() 时序口径一致
+        start_time = now_utc_aware().replace(tzinfo=None)  # 朴素,便于与 datetime.now() 减差计算
 
         # 合并参数并注入运行时参数
         tool_kwargs = self._merge_args_kwargs(args, kwargs)

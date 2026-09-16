@@ -6,6 +6,61 @@
 
 Agent User Management 是一个基于 FastAPI 的 AI Agent 管理平台，提供用户认证、会话管理、文件管理、多 Agent 功能等。
 
+## Docker 镜像时区与项目时间工厂（2026-09-16 落地）
+
+**背景**：`python:3.11-slim` 镜像默认时区为 UTC，未装 `tzdata`、未设 `ENV TZ`；全项目 `datetime.now()`（naive，无时区）依赖系统本地时区，在容器内一律返回 UTC naive，导致业务展示、SQL 直查、API 响应全部晚 8 小时。**用户原话点名痛点**：`server_inspection_records.collected_at`（**TIMESTAMPTZ** 列，详见 `init_all_tables.sql:3493`）落库与 SQL 直查都是 UTC 时刻。
+
+**镜像（治本）**：
+- `app/Dockerfile`：运行阶段 `apt-get install` 增加 `tzdata` 包；`ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && dpkg-reconfigure -f noninteractive tzdata`；`ENV` 块追加 `TZ=Asia/Shanghai`。
+- `dockers/sandbox/Dockerfile`：与 `app/Dockerfile` 对齐，沙箱子容器 SSH 进去 `date` 显示北京。
+- 3 个 `docker-compose*.yml`（`docker-compose.yml` / `docker-compose-arm64.yml` / `deploy_analysis/docker-compose.yml`）：`agents`/`aiops` service `environment` 追加 `TZ: Asia/Shanghai` 显式声明兜底。
+- `web/Agent/Dockerfile`（nginx 容器）：**不改**——容器只 serve 静态资源；前端 JS `new Date()` 最终在用户浏览器执行，按浏览器本地时区解析。
+
+**Python 业务（统一）**：新增 `app/shared/utils/timezone.py` 三个工厂函数，业务代码不再直接调 `datetime.now()`：
+- `now_asia_shanghai()` — aware 北京时区（`tzinfo=ZoneInfo("Asia/Shanghai")`），通用 / 调试用。
+- `now_asia_shanghai_naive()` — 北京 naive（`tzinfo=None`），写 PG `TIMESTAMP` 朴素列（落库后 SQL 直查显北京，前端浏览器北京解析仍正确）。
+- `now_utc_aware()` — aware UTC（`tzinfo=ZoneInfo("UTC")`），写 PG `TIMESTAMPTZ` 列（asyncpg 自动转 UTC 存；API 返回 `isoformat()` 带 `+00:00`，前端浏览器任何时区都正确解析）；SSE 事件时间戳统一用这个。
+
+**写库策略**（按列类型分发）：
+| 列类型 | 工厂函数 | 行为 |
+|---|---|---|
+| `TIMESTAMP` 朴素列（如 `agent_task_runs.started_at` / `server_inspection_record_service` 不写它 / `users.created_at`） | `now_asia_shanghai_naive()` | DB 直查即北京 |
+| `TIMESTAMPTZ` 列（如 `server_inspection_records.collected_at` / `server_latest_snapshot.collected_at` / `users_mfa_totp.enabled_at`） | `now_utc_aware()` | DB 内部存 UTC，前端浏览器按本地时区解析 |
+| DB `DEFAULT NOW()` 列 | 工厂函数不参与 | DB 端 UTC 时刻（PG 服务器时区） |
+
+**保持不变的设计契约**（`datetime.utcnow()` / `datetime.now(timezone.utc).replace(tzinfo=None)` 全部按 2026-08-08 MFA bug 教训保持原状）：
+- `app/shared/utils/auth/mfa_service.py`（3 处 `datetime.now(timezone.utc).replace(tzinfo=None)`）
+- `app/shared/utils/auth/user_login_session_service.py`（4 处 `datetime.utcnow()`）
+- `app/shared/utils/log_service.py`（1 处 `default_factory=lambda: datetime.utcnow()`）
+- `events.py:59` `datetime.now().timestamp()`、`SandboxTools.py` / `BaseFilesystemTool.py` / `mcp_tool_adapter.py` 耗时计算：与时区无关，**零回归**保留。
+
+**配置文件变更**：
+- 新增 `TZ=Asia/Shanghai`（Dockerfile / docker-compose 显式声明；**不进** .env，是部署级环境变量）。
+- DB schema / .env / 前端 / nginx：均**不变**。
+- 历史数据**不迁移**（用户接受断点；旧数据是 UTC 时刻，新数据是北京时刻）。
+
+**全量改造覆盖**（20+ 文件）：
+- 巡检采集：`server_inspection_record_service.py:247`（`collected_at`）、`server_inspection_router.py:253`（ScriptContext.started_at）
+- 任务调度：`task_scheduler_service.py` 4 处（`started_at` / `finished_at`）
+- 邮件 sweep：`ops_inspection_sweep.py:256`（`finished_at`）
+- 项目路径：`project_db.py` 3 处（`data/project/YYYY/MM/DD/<uuid>`，北京 0-8 点不再落到前一天目录）
+- 会话过期：`session_db.py` 3 处（`now_utc_aware()` 与 DB `DEFAULT NOW()` 时序一致）
+- 邮件模板：`template_renderer.py:111`
+- agent / mcp_wrapper / mcp_tool_adapter / BaseTools / document_memory_store
+- ProjectTools / MapTools 字符串生成（耗时 `start_time` / `end_time` 保留）
+- AICodingCheckAgent / 合同三 client / ApprovalAgentTools
+
+**测试同步**：
+- `app/tests/shared/utils/test_timezone.py`（**新增**）：4 个测试类，13 个用例覆盖三个工厂函数的 tzinfo / offset / isoformat / 时序差值 / 8h 差值。
+- `test_server_inspection_record_service.py` +1 用例：`test_save_collected_at_is_aware_utc_when_writing_timestamptz`（fake db 拦截 `INSERT INTO server_inspection_records` 写入参数，断言 `collected_at` 必须是 aware UTC）。
+- `test_task_scheduler_service.py` +1 用例：`test_run_started_at_uses_asia_shanghai_naive_when_writing_naive_column`（fake db 拦截 `UPDATE agent_task_runs` 写入，断言 `started_at` / `finished_at` 是 naive datetime 且落在北京日窗口内）。
+
+**部署操作清单**（用户执行）：
+1. `docker compose build --no-cache aiops`（如改 sandbox 镜像也 build）。
+2. `docker compose up -d aiops`。
+3. `docker exec aiops date` 确认 `CST +0800`。
+4. `docker exec aiops python -c "from app.shared.utils.timezone import now_asia_shanghai; print(now_asia_shanghai().isoformat())"` 确认 `+08:00`。
+
 ## 技术栈
 
 - **后端**: FastAPI + Uvicorn

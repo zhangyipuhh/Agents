@@ -28,6 +28,10 @@ import OpsServerWindow, {
   pickAnomalyDisks,
   formatAnomalyItem,
   fmtNum,
+  pickWebAppSummary,
+  webAppCpuColor,
+  WEB_APP_CPU_WARN,
+  WEB_APP_CPU_CRIT,
 } from '../OpsServerWindow.vue'
 
 const baseWin = { x: 0, y: 0, z: 1, max: false }
@@ -190,8 +194,10 @@ describe('OpsServerWindow 卡片组件', () => {
         servers: [makeServer({ id: 1, cpu: null, mem: null, disks: [{ name: '/', used: null }] })],
       },
     })
+    // 2026-09-16 晚:web 服务器行新增第 4 个指标,所以共 4 个 '-' (CPU / 内存 / 存储 / Web)
     const texts = wrapper.findAll('.srv-metric-value').map(n => n.text())
-    expect(texts).toEqual(['-', '-', '-'])
+    expect(texts.length).toBe(4)
+    for (const t of texts) expect(t).toBe('-')
   })
 
   it('test_storage_picks_problem_disk 存储行选用 used 最高的异常盘', () => {
@@ -303,6 +309,80 @@ describe('fmtNum 数值格式化（2026-08-16：负载等非百分比指标不�
   })
 })
 
+// ============================== 2026-09-16 晚:web 服务器行(pickWebAppSummary + webAppCpuColor) ==============================
+
+describe('OpsServerWindow web-server 行 (2026-09-16 晚)', () => {
+  it('test_pickWebAppSummary_returns_null_for_empty_array', () => {
+    expect(pickWebAppSummary([])).toBeNull()
+    expect(pickWebAppSummary(null)).toBeNull()
+    expect(pickWebAppSummary(undefined)).toBeNull()
+  })
+
+  it('test_pickWebAppSummary_returns_highest_cpu_pct_app', () => {
+    const webApps = [
+      { appName: 'shop-frontend', serverType: 'tomcat', status: 'running', webAppCpuPct: 12.5, webAppMemMb: 256 },
+      { appName: 'shop-api', serverType: 'tomcat', status: 'running', webAppCpuPct: 88.0, webAppMemMb: 1024 },
+      { appName: 'admin-portal', serverType: 'tomcat', status: 'running', webAppCpuPct: 65.0, webAppMemMb: 512 },
+    ]
+    const summary = pickWebAppSummary(webApps)
+    expect(summary).not.toBeNull()
+    expect(summary.appName).toBe('shop-api')
+    expect(summary.cpuPct).toBe(88.0)
+    expect(summary.appCount).toBe(3)
+    expect(summary.tomcatCount).toBe(3)
+    expect(summary.iisCount).toBe(0)
+  })
+
+  it('test_pickWebAppSummary_ignores_apps_missing_cpu_pct', () => {
+    // 缺失 webAppCpuPct 排末尾(按 -Infinity 排序),仍能挑出有值的
+    const webApps = [
+      { appName: 'no-cpu-1', serverType: 'tomcat', status: 'running', webAppMemMb: 256 },
+      { appName: 'has-cpu', serverType: 'iis', status: 'running', webAppCpuPct: 30, webAppMemMb: 512 },
+      { appName: 'no-cpu-2', serverType: 'tomcat', status: 'running', webAppMemMb: 1024 },
+    ]
+    const summary = pickWebAppSummary(webApps)
+    expect(summary.appName).toBe('has-cpu')
+    expect(summary.cpuPct).toBe(30)
+    // 类型分布:tomatCount=2, iisCount=1
+    expect(summary.tomcatCount).toBe(2)
+    expect(summary.iisCount).toBe(1)
+  })
+
+  it('test_pickWebAppSummary_aggregates_tomcat_and_iis_count', () => {
+    const webApps = [
+      { appName: 'a1', serverType: 'tomcat', status: 'running', webAppCpuPct: 5 },
+      { appName: 'a2', serverType: 'tomcat', status: 'stopped', webAppCpuPct: 0 },
+      { appName: 'a3', serverType: 'iis', status: 'running', webAppCpuPct: 10 },
+      { appName: 'a4', serverType: 'iis', status: 'running', webAppCpuPct: 20 },
+      { appName: 'a5', serverType: 'iis', status: 'stopped', webAppCpuPct: 0 },
+    ]
+    const summary = pickWebAppSummary(webApps)
+    expect(summary.appCount).toBe(5)
+    expect(summary.tomcatCount).toBe(2)
+    expect(summary.iisCount).toBe(3)
+    expect(summary.stoppedCount).toBe(2)
+    // CPU 最高的是 a4=20
+    expect(summary.appName).toBe('a4')
+  })
+
+  it('test_webAppCpuColor_three_state_threshold', () => {
+    // null / 非数字 → 灰
+    expect(webAppCpuColor(null)).toBe('#9aa3af')
+    expect(webAppCpuColor(undefined)).toBe('#9aa3af')
+    expect(webAppCpuColor('not a number')).toBe('#9aa3af')
+    // < WARN(60) → 绿
+    expect(webAppCpuColor(0)).toBe('#1d9a40')
+    expect(webAppCpuColor(WEB_APP_CPU_WARN - 1)).toBe('#1d9a40')
+    // == WARN(60) → 黄
+    expect(webAppCpuColor(WEB_APP_CPU_WARN)).toBe('#f59e0b')
+    // (WARN, CRIT) → 黄
+    expect(webAppCpuColor(WEB_APP_CPU_WARN + 10)).toBe('#f59e0b')
+    // == CRIT(85) → 红
+    expect(webAppCpuColor(WEB_APP_CPU_CRIT)).toBe('#ff453a')
+    expect(webAppCpuColor(99)).toBe('#ff453a')
+  })
+})
+
 describe('formatCollectedAt 时间格式化', () => {
   it('test_format_collected_at_valid_iso 合法 ISO → YYYY-MM-DD HH:MM', () => {
     // 用 ISO 字符串 + toLocaleString 不依赖宿主时区，故直接断言字符串前缀
@@ -375,8 +455,8 @@ describe('OpsServerWindow 卡片头/负载渲染（2026-08-16 新增）', () => 
     })
     const labels = linux.findAll('.srv-metric-label').map(n => n.text())
     expect(labels).toContain('服务器负载')
-    // linux 指标项 4 个（CPU/内存/存储/服务器负载）
-    expect(linux.findAll('.srv-metric').length).toBe(4)
+    // 2026-09-16 晚:linux 指标项 5 个(CPU/内存/存储/服务器负载/Web 服务器)
+    expect(linux.findAll('.srv-metric').length).toBe(5)
 
     const win = mount(OpsServerWindow, {
       props: {
@@ -391,7 +471,8 @@ describe('OpsServerWindow 卡片头/负载渲染（2026-08-16 新增）', () => 
     })
     const winLabels = win.findAll('.srv-metric-label').map(n => n.text())
     expect(winLabels).not.toContain('负载')
-    expect(win.findAll('.srv-metric').length).toBe(3)
+    // 2026-09-16 晚:windows 指标项 4 个(CPU/内存/存储/Web 服务器,无服务器负载)
+    expect(win.findAll('.srv-metric').length).toBe(4)
   })
 
   it('test_card_load_value_without_percent_sign 卡片负载显示原始数值不带 %', () => {

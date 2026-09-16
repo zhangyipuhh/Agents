@@ -27,6 +27,9 @@ from app.shared.utils.auth.ownership_scope import OwnershipScope
 from app.shared.utils.auth.session_db import SessionDB
 from app.shared.utils.email import EmailTemplateRenderer
 from app.shared.utils.email.template_renderer import build_render_context
+from app.shared.utils.timezone import (
+    now_asia_shanghai_naive,  # 2026-09-16: started_at/finished_at 是 TIMESTAMP 朴素列,落北京
+)
 
 
 logger = logging.getLogger(__name__)
@@ -729,7 +732,8 @@ class TaskSchedulerService:
                 run_id = run["id"]
 
             session_id = f"task-{schedule_id}-{uuid.uuid4().hex}"
-            started_at = datetime.now()
+            # 2026-09-16: 写 TIMESTAMP 朴素列,落北京 naive
+            started_at = now_asia_shanghai_naive()
             await self._update_run(
                 run_id,
                 status="running",
@@ -813,7 +817,8 @@ class TaskSchedulerService:
                     script_output_raw = await registered.func(context)
                     # 把脚本返回值归一化为 (body, attachments_list)
                     body, attachments = normalize_script_result(script_output_raw)
-                    finished_at = datetime.now()
+                    # 2026-09-16: 写 TIMESTAMP 朴素列,落北京 naive
+                    finished_at = now_asia_shanghai_naive()
                     await self._update_run(
                         run_id,
                         status="success",
@@ -888,7 +893,8 @@ class TaskSchedulerService:
                         ),
                     )
                     output_text = self._extract_output_text(result)
-                    finished_at = datetime.now()
+                    # 2026-09-16: 写 TIMESTAMP 朴素列,落北京 naive
+                    finished_at = now_asia_shanghai_naive()
                     await self._update_run(
                         run_id,
                         status="success",
@@ -906,7 +912,8 @@ class TaskSchedulerService:
                     run_logger.exception("任务执行失败: %s", exc)
                 except Exception:
                     pass
-                finished_at = datetime.now()
+                # 2026-09-16: 写 TIMESTAMP 朴素列,落北京 naive
+                finished_at = now_asia_shanghai_naive()
                 await self._update_run(
                     run_id,
                     status="failed",

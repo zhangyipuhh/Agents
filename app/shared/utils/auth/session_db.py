@@ -12,6 +12,7 @@ import threading
 from typing import Optional, Dict
 from datetime import datetime
 from app.core.database import DatabasePool, register_schema
+from app.shared.utils.timezone import now_utc_aware  # 2026-09-16: 会话与 DB DEFAULT NOW() 时序一致
 
 
 @register_schema
@@ -203,7 +204,8 @@ class SessionDB:
             username: 用户名
             project_id: 关联的项目 ID（None = 不使用文件夹 / 旧会话）
         """
-        now = datetime.now()
+        # 2026-09-16: 改 now_utc_aware(),与 DB DEFAULT NOW() 时序一致(都是 UTC)
+        now = now_utc_aware().replace(tzinfo=None)  # 朴素写库,避免 asyncpg 类型错配
         print(f"[诊断-SessionDB] add_session: session_id={session_id}, user_id={user_id}, username={username}, project_id={project_id}")
 
         # 写入内存
@@ -444,7 +446,8 @@ class SessionDB:
         Returns:
             bool: 更新成功返回 True
         """
-        now = datetime.now()
+        # 2026-09-16: 改 now_utc_aware(),与 DB DEFAULT NOW() 时序一致(都是 UTC)
+        now = now_utc_aware().replace(tzinfo=None)  # 朴素写库,避免 asyncpg 类型错配
 
         # 更新内存
         with cls._lock:
@@ -571,7 +574,8 @@ class SessionDB:
             list: 在线用户列表，每项包含 user_id、username、session_count、last_active_at
         """
         from datetime import timedelta
-        threshold = datetime.now() - timedelta(minutes=minutes)
+        # 2026-09-16: 改 now_utc_aware(),与 DB DEFAULT NOW() 时序一致(都是 UTC)
+        threshold = now_utc_aware().replace(tzinfo=None) - timedelta(minutes=minutes)
 
         if cls.is_enabled():
             rows = await DatabasePool.fetch(

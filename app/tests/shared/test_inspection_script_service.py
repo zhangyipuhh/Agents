@@ -340,7 +340,8 @@ def test_seed_default_groups_inserts_when_absent_and_idempotent():
 
     stats1 = asyncio.run(svc.seed_default_groups())
     assert stats1["groups_inserted"] == 2
-    assert stats1["segments_inserted"] == 8
+    # 2026-09-16 晚:5 段/组(disk-usage + disk-io + memory + cpu + web-server)
+    assert stats1["segments_inserted"] == 10
     # 关键:第二次 reload 时 segments 已存在 → 触发 skipped 路径
     stats2 = asyncio.run(svc.seed_default_groups())
     assert stats2["groups_inserted"] == 0
@@ -465,6 +466,182 @@ def test_seed_default_groups_updates_known_segment_when_script_changed():
     # 运维自定义段(custom-legacy-segment)从未进入 UPDATE 调用
     custom_ids = {r["id"] for r in rows_by_group[1] if r["segment_key"] == custom_segment_key}
     assert custom_ids.isdisjoint({int(c["args"][3]) for c in update_calls})
+
+
+# ----------------------------------------------------------------------
+# P3.1: 2026-09-16 晚 web-server 分段播种契约
+# ----------------------------------------------------------------------
+
+
+def test_seed_default_groups_inserts_web_server_segment_when_absent():
+    """空库播种:web-server 段在 linux/windows 两组都被插入(共 +2 segments)。
+
+    锁定 web-server 段在两组 DEFAULT_INSPECTION_GROUPS 中均存在的契约,
+    以及 segment_key / display_name / sort_order=50 / enabled=TRUE 的形状。
+    """
+    from app.shared.utils.inspection.default_scripts import DEFAULT_INSPECTION_GROUPS
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    svc = InspectionScriptService(db)
+    asyncio.run(svc.preload_all())
+
+    seg_calls = {"n": 0}
+    group_id_counter = {"v": 1}
+    insert_calls = []
+
+    async def _fetchrow(sql, *args):
+        if "INSERT INTO inspection_scripts " in sql and "RETURNING" in sql:
+            gid = group_id_counter["v"]
+            group_id_counter["v"] += 1
+            return {
+                "id": gid, "name": args[0], "inspection_fields": "[]",
+                "display_name": args[1], "platform": args[2], "version": args[3],
+                "inspection_parser": args[4], "inspection_script": None,
+                "created_at": None, "updated_at": None,
+            }
+        return None
+
+    async def _fetch(sql, *args):
+        if "FROM inspection_script_segments" in sql:
+            seg_calls["n"] += 1
+            # 前 2 次(每组首轮 reload)返回空 → 触发 INSERT 路径
+            return []
+        return []
+
+    async def _execute(sql, *args):
+        if (
+            "INSERT INTO inspection_script_segments" in sql
+            and "ON CONFLICT" in sql
+        ):
+            insert_calls.append({
+                "script_id": int(args[0]),
+                "segment_key": str(args[1]),
+                "display_name": str(args[2]),
+                "sort_order": int(args[3]),
+                "script_len": len(str(args[4])) if args[4] is not None else 0,
+            })
+            return "INSERT 0 1"
+        return "INSERT 0 0"
+
+    db.fetchrow = AsyncMock(side_effect=_fetchrow)
+    db.execute = AsyncMock(side_effect=_execute)
+    db.fetch = AsyncMock(side_effect=_fetch)
+
+    stats = asyncio.run(svc.seed_default_groups())
+    # 2 组 + 5 段/组(原 4 段 + web-server) = 10 段
+    assert stats["groups_inserted"] == 2
+    assert stats["segments_inserted"] == 10
+    # web-server 段必须出现在 2 组的 INSERT 列表里
+    web_server_inserts = [c for c in insert_calls if c["segment_key"] == "web-server"]
+    assert len(web_server_inserts) == 2
+    # sort_order=50(放在 cpu 段 sort_order=40 之后)
+    for c in web_server_inserts:
+        assert c["sort_order"] == 50
+        # script 文本非空(实际 > 200 字符,因含完整 bash / PS 代码)
+        assert c["script_len"] > 200
+    # 与 DEFAULT_INSPECTION_GROUPS 契约对齐
+    expected_keys = {
+        g["name"]: {s["segment_key"] for s in g["segments"]}
+        for g in DEFAULT_INSPECTION_GROUPS
+    }
+    assert "web-server" in expected_keys["linux-bash"]
+    assert "web-server" in expected_keys["windows-ps-5.1"]
+
+
+def test_seed_default_groups_updates_web_server_segment_when_default_script_changes():
+    """已知默认 web-server 段存在但脚本内容不一致 → UPDATE。
+
+    与 disk-usage 段回归测试同模式,锁定 web-server 段的"代码资产演进"
+    行为:运维自定义段不动,已知默认段内容不匹配时自动 UPDATE。
+    """
+    from app.shared.utils.inspection.default_scripts import DEFAULT_INSPECTION_GROUPS
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    svc = InspectionScriptService(db)
+    # 2026-09-16 晚:必须先 preload_all 让 _id_cache 命中,
+    # 否则 _reload_segments no-op → existing_segments=[] → 走 INSERT 全段
+    # 路径而不是 UPDATE/skipped 路径
+    # preload_all 拉 inspection_scripts 主表 → 两组都已存在
+    async def _fetch_main(sql, *args):
+        if "FROM inspection_scripts" in sql and "RETURNING" not in sql:
+            return [
+                {"id": 1, "name": "linux-bash", "display_name": "Linux Bash",
+                 "platform": "linux", "version": "bash", "inspection_parser": "json",
+                 "inspection_script": None, "inspection_fields": "[]",
+                 "created_at": None, "updated_at": None},
+                {"id": 2, "name": "windows-ps-5.1", "display_name": "Windows PS",
+                 "platform": "windows", "version": "ps-5.1", "inspection_parser": "json",
+                 "inspection_script": None, "inspection_fields": "[]",
+                 "created_at": None, "updated_at": None},
+            ]
+        return []
+
+    db.fetch = AsyncMock(side_effect=_fetch_main)
+    asyncio.run(svc.preload_all())
+
+    stale_script = "# STALE WEB-SERVER SCRIPT, should be updated"
+    linux_group = next(g for g in DEFAULT_INSPECTION_GROUPS if g["name"] == "linux-bash")
+    win_group = next(g for g in DEFAULT_INSPECTION_GROUPS if g["name"] == "windows-ps-5.1")
+
+    def _mk_db_row(sid, seg_def, seg_id):
+        return {
+            "id": seg_id, "script_id": sid,
+            "segment_key": seg_def["segment_key"],
+            "display_name": seg_def["display_name"],
+            "sort_order": seg_def["sort_order"],
+            "script": seg_def["script"],
+            "enabled": True, "created_at": None, "updated_at": None,
+        }
+
+    # group id: linux=1, windows=2;每个 group 完整 segments
+    rows_by_group = {
+        1: [_mk_db_row(1, s, i + 1000) for i, s in enumerate(linux_group["segments"])],
+        2: [_mk_db_row(2, s, i + 2000) for i, s in enumerate(win_group["segments"])],
+    }
+    # 把 linux web-server 段 script 改为 stale → 触发 UPDATE
+    for r in rows_by_group[1]:
+        if r["segment_key"] == "web-server":
+            r["script"] = stale_script
+            target_linux_id = r["id"]
+            break
+    else:
+        raise AssertionError("linux-bash 组缺 web-server 段")
+
+    update_calls = []
+
+    async def _fetch(sql, *args):
+        if "FROM inspection_script_segments" in sql and args:
+            return list(rows_by_group.get(int(args[0]), []))
+        return []
+
+    async def _execute(sql, *args):
+        if sql.strip().upper().startswith("UPDATE INSPECTION_SCRIPT_SEGMENTS"):
+            update_calls.append({"sql": sql, "args": args})
+            return "UPDATE 1"
+        return "INSERT 0 0"
+
+    db.fetch = AsyncMock(side_effect=_fetch)
+    db.execute = AsyncMock(side_effect=_execute)
+
+    stats = asyncio.run(svc.seed_default_groups())
+    # 2 组都已存在 → groups_inserted=0
+    assert stats["groups_inserted"] == 0
+    # 已存在 segments 不走 INSERT 路径
+    assert stats["segments_inserted"] == 0
+    # windows web-server 段内容一致 → skipped+1
+    assert stats["skipped"] == 1
+    # linux web-server 段 stale → UPDATE 触发
+    assert stats["segments_updated"] == 1
+    assert len(update_calls) == 1
+    upd = update_calls[0]
+    new_script = upd["args"][0]
+    # UPDATE 写入的 script 必须是代码资产的最新值,不是 stale
+    assert new_script != stale_script
+    assert "catalina.sh" in new_script  # linux web-server 段特征关键词
+    # id 必须指向 linux web-server 段
+    assert int(upd["args"][3]) == target_linux_id
 
 
 # ----------------------------------------------------------------------

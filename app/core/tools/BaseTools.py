@@ -24,6 +24,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.types import Command
 from app.core.agent.AgentContext import AgentContext
 from app.shared.utils.files.DocumentLoader import DocumentLoader
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16
 
 
 
@@ -190,7 +191,7 @@ def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
     Returns:
         str: 格式化的时间字符串，格式 "YYYY-MM-DD HH:MM:SS (session_id: xxx)"
     """
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    current_time = now_asia_shanghai_naive().strftime("%Y-%m-%d %H:%M:%S")
     return current_time + f" (session_id: {runtime.context.get('session_id', 'default')})"
 
 

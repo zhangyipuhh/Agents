@@ -27,6 +27,7 @@ from app.features.AI_Coding_Check_agent.config.prompts import REVIEW_SYSTEM_PROM
 from app.features.AI_Coding_Check_agent.config.config import ai_coding_check_settings
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.store.base import BaseStore
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16
 
 # 模块级日志记录器
 logger = logging.getLogger(__name__)
@@ -174,7 +175,7 @@ class AICodingCheckAgent:
         )
 
         # 生成唯一的会话ID，由开发者姓名和时间戳组成，确保每次评审独立
-        session_id = f"review_{name}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        session_id = f"review_{name}_{now_asia_shanghai_naive().strftime('%Y%m%d%H%M%S')}"
 
         # 构建执行配置，设置会话线程ID和递归限制
         config = AICodingCheckExecuteConfig(
@@ -294,7 +295,7 @@ class AICodingCheckAgent:
         """
         return {
             "name": name,
-            "review_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "review_time": now_asia_shanghai_naive().strftime("%Y-%m-%d %H:%M:%S"),
             "document_quality": {
                 "overall_score": 0,
                 "completeness": {

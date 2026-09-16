@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from app.shared.utils.auth.ownership_scope import OwnershipScope
+from app.shared.utils.timezone import now_utc_aware  # 2026-09-16: 写 TIMESTAMPTZ 列用 aware UTC
 
 
 logger = logging.getLogger(__name__)
@@ -244,7 +245,11 @@ class ServerInspectionRecordService:
                 )
 
         # 同事务内所有行共用同一 collected_at
-        collected_at = datetime.now()
+        # 2026-09-16: collected_at 列是 TIMESTAMPTZ（init_all_tables.sql:3493）,
+        # 必须传 aware datetime;asyncpg 会自动转 UTC 存。改前是 naive datetime,
+        # asyncpg 按 UTC 解释,DB 内是 UTC → SQL 直查显示 UTC,与北京差 8 小时。
+        # 改后 ISO 返回带 +00:00,前端浏览器北京解析仍正确显示北京时刻。
+        collected_at = now_utc_aware()
         saved = 0
         records_sql = """
             INSERT INTO server_inspection_records (

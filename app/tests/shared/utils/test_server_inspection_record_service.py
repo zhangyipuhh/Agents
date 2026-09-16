@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1004,6 +1004,7 @@ def test_save_then_list_latest_round_trip():
             field_results=[],
             inspection_status="warn",
         )]),
+        created_by_user_id=1,
     ))
     assert saved == 1
 
@@ -1223,3 +1224,61 @@ def test_list_latest_admin_preserves_legacy_disk_records_without_host_disk():
     # 旧字段保留
     assert disks[0]["mount"] == "C:\\"
     assert disks[0]["disk_used_pct"] == 50
+
+
+# ============================================================================
+# 2026-09-16 时区改造回归: save_inspection_result 写 TIMESTAMPTZ 必须传 aware UTC
+# ============================================================================
+
+
+def test_save_collected_at_is_aware_utc_when_writing_timestamptz():
+    """save_inspection_result 写入的 collected_at 必须是 aware UTC datetime。
+
+    回归背景:
+        - server_inspection_records.collected_at 是 TIMESTAMPTZ 列
+          (init_all_tables.sql:3493)。
+        - 改造前 service 用 ``datetime.now()``(naive,容器时区生效后是
+          北京 naive),asyncpg 把 naive 当 UTC 解释,DB 存的是错误时区;
+          SQL 直查显示与北京差 8 小时。
+        - 改造后 service 用 ``now_utc_aware()``(aware UTC),asyncpg 把 aware
+          自动转 UTC 存;API 返回 isoformat 带 +00:00,前端浏览器北京解析仍正确。
+
+    本用例:
+        - 拦截 conn.fetchrow 调用,捕获写入参数 collected_at
+        - 断言 collected_at 必须是 aware datetime 且 utcoffset == 0(UTC)
+        - 断言与同调用点的 now_utc_aware() 差值 < 2 秒
+    """
+    db, conn = _build_tx_db()
+    devops = _StubDevopsService([
+        {"id": 1, "business_name": "biz-A", "server_type": "linux"},
+    ])
+    svc = ServerInspectionRecordService(db=db, devops_server_service=devops)
+
+    captured_args = {}
+
+    async def _capture_fetchrow(sql, *args, **kwargs):
+        if "INSERT INTO server_inspection_records" in sql and args:
+            # server_id=$1, business_name=$2, collected_at=$3
+            captured_args["collected_at"] = args[2]
+        return {"id": 1}
+
+    conn.fetchrow.side_effect = _capture_fetchrow
+
+    from app.shared.utils.timezone import now_utc_aware as _factory_before
+    before = _factory_before()
+
+    asyncio.run(svc.save_inspection_result(
+        _make_report([_server_ops_item()]),
+        created_by_user_id=1,
+    ))
+
+    after = _factory_before()
+
+    assert "collected_at" in captured_args, "save_inspection_result 未调用 records INSERT"
+    collected_at = captured_args["collected_at"]
+    assert isinstance(collected_at, datetime)
+    assert collected_at.tzinfo is not None, "collected_at 不能是 naive(TIMESTAMPTZ 列需要 aware)"
+    assert collected_at.utcoffset() == timedelta(0), (
+        "collected_at 必须是 aware UTC,实际 utcoffset=" + str(collected_at.utcoffset())
+    )
+    assert before.timestamp() - 2 <= collected_at.timestamp() <= after.timestamp() + 2

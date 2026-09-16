@@ -38,13 +38,19 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|http://|https://|g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true && \
+    # 2026-09-16 时区改造:装 tzdata 让 /etc/localtime / date / log 等系统级时间对齐
+    # Asia/Shanghai;Python 业务代码统一走 app/shared/utils/timezone.py 工厂函数
     apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     ripgrep \
     libreoffice-writer \
     libreoffice-core \
     iputils-ping \
-    fonts-dejavu-core && \
+    fonts-dejavu-core \
+    tzdata && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone && \
+    dpkg-reconfigure -f noninteractive tzdata && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local
@@ -66,6 +72,9 @@ EXPOSE 8001
 
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
+    # 2026-09-16 时区改造:容器时区统一为北京时间;Python zoneinfo 不依赖 OS tzdata
+    # 但 datetime.now() / date / log 等依赖。docker-compose 也显式声明 TZ 兜底。
+    TZ=Asia/Shanghai \
     PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     PIP_TIMEOUT=600 \
     OPENBLAS_NUM_THREADS=1 \

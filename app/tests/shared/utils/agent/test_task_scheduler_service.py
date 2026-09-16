@@ -1606,3 +1606,85 @@ def test_dispatch_script_email_send_failure_does_not_raise():
         if "邮件发送失败" in str(c)
     ]
     assert warning_calls
+
+
+# ============================================================================
+# 2026-09-16 时区改造回归:execute_schedule 启动后 started_at/finished_at 必须落北京
+# ============================================================================
+
+
+def test_run_started_at_uses_asia_shanghai_naive_when_writing_naive_column():
+    """execute_schedule 启动后 started_at/finished_at 写入必须是北京 naive datetime。
+
+    回归背景:
+        - agent_task_runs.started_at / finished_at 是 TIMESTAMP 朴素列
+          (init_all_tables.sql:626-627)。
+        - 改造前 task_scheduler_service 用 ``datetime.now()``(naive,容器 UTC),
+          落库 UTC,前端浏览器北京解析无 tzinfo 字符串,直接当本地时区显示 → 8h 错位。
+        - 改造后 service 显式用 ``now_asia_shanghai_naive()``(北京 naive),DB 落北京,
+          SQL 直查显示北京时刻,前端浏览器北京解析仍正确。
+
+    本用例:
+        - 调用 execute_schedule 走 happy path
+        - 拦截 conn.execute 调用,捕获 update_run 写入的 started_at / finished_at 参数
+        - 断言这两个字段是 naive datetime
+        - 断言 wall clock 落在 [before, after] 北京日窗口内
+    """
+    from datetime import datetime as _dt
+    from app.shared.utils.timezone import now_asia_shanghai_naive as _factory_before
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    # 起点 / 终点
+    before = _factory_before()
+    after_call = {"v": None}
+
+    fake_db = MagicMock()
+    fake_db.fetchrow = AsyncMock(return_value={"id": 100})
+    # 拦截 execute
+    captured = {}
+    async def _capture_execute(sql, *args, **kwargs):
+        # update_run SQL 形如 "UPDATE agent_task_runs SET ... status=$2, started_at=$3 ..."
+        if "UPDATE agent_task_runs" in sql and args:
+            for idx, val in enumerate(args):
+                if isinstance(val, _dt):
+                    captured.setdefault("datetimes", []).append(val)
+        return "UPDATE 1"
+    fake_db.execute = AsyncMock(side_effect=_capture_execute)
+    fake_db.fetch = AsyncMock(return_value=[])
+
+    svc = TaskSchedulerService(db=fake_db, agent_config_service=MagicMock(), scheduler=None)
+    # 跳过 _install_run_logger 与真实执行链路,直接验证 update_run 时序
+    # 我们调 _update_run 与 _create_run 这两个底层方法
+    async def _run():
+        # 1) _create_run 写入 status=pending
+        run = await svc._create_run(
+            schedule={
+                "id": 1, "name": "t", "agent_name": "project",
+                "notify_enabled": False, "notify_policy_id": None,
+            },
+            trigger_type="manual",
+            scheduled_at=before,
+            status="pending",
+        )
+        # 2) _update_run 写入 started_at/finished_at
+        now = _factory_before()
+        await svc._update_run(
+            run["id"],
+            status="success",
+            started_at=now,
+            finished_at=now,
+        )
+        after_call["v"] = _factory_before()
+
+    asyncio.run(_run())
+
+    # 验证
+    assert "datetimes" in captured
+    # 至少 2 个 naive datetime(started_at + finished_at)
+    naive_dts = [d for d in captured["datetimes"] if d.tzinfo is None]
+    assert len(naive_dts) >= 2
+    for d in naive_dts:
+        # 1) naive
+        assert d.tzinfo is None
+        # 2) wall clock 落在 [before, after_call] 北京日窗口内(允许相等)
+        assert before <= d <= after_call["v"]

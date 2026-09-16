@@ -11,10 +11,11 @@ Author: 张镒谱
 """
 
 from typing import Any, Optional
-from datetime import datetime
 from langchain_core.tools import BaseTool, ToolException
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
+
+from app.shared.utils.timezone import now_utc_aware  # 2026-09-16: SSE 事件时间戳统一 UTC ISO
 
 
 class MCPToolWrapper(BaseTool):
@@ -97,7 +98,7 @@ class MCPToolWrapper(BaseTool):
                 "header": {
                     "tool_name": self.name,
                     "tool_call_id": tool_call_id,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": now_utc_aware().isoformat(),
                     "status": "start",
                     "version": "1.0"
                 },
@@ -125,7 +126,7 @@ class MCPToolWrapper(BaseTool):
                     "header": {
                         "tool_name": self.name,
                         "tool_call_id": tool_call_id,
-                        "timestamp": datetime.now().isoformat(),
+                        "timestamp": now_utc_aware().isoformat(),
                         "status": "complete",
                         "version": "1.0"
                     },
@@ -157,7 +158,7 @@ class MCPToolWrapper(BaseTool):
                     "header": {
                         "tool_name": self.name,
                         "tool_call_id": tool_call_id,
-                        "timestamp": datetime.now().isoformat(),
+                        "timestamp": now_utc_aware().isoformat(),
                         "status": "progress",
                         "version": "1.0"
                     },
@@ -177,7 +178,7 @@ class MCPToolWrapper(BaseTool):
                     "header": {
                         "tool_name": self.name,
                         "tool_call_id": tool_call_id,
-                        "timestamp": datetime.now().isoformat(),
+                        "timestamp": now_utc_aware().isoformat(),
                         "status": "complete",
                         "version": "1.0"
                     },
@@ -214,7 +215,7 @@ class MCPToolWrapper(BaseTool):
                 "header": {
                     "tool_name": self.name,
                     "tool_call_id": tool_call_id,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": now_utc_aware().isoformat(),
                     "status": "error",
                     "version": "1.0"
                 },

@@ -564,11 +564,14 @@ def parse_inspection_output(
 
 _STATUS_PRIORITY = {"pass": 0, "unassessed": 1, "warn": 2, "crit": 3}
 
-# 巡检脚本输出 JSON 顶层声明「按数组展开」的特殊键名。
-# 适用场景：脚本把每个磁盘 / 接口 / 分区输出一条结构化记录,顶层用
-# ``{"disks":[{...},{...}]}`` 形式承载;评估器对声明的字段(如
-# ``disk_used_pct``)在顶层缺失时,会读取该数组并对每个元素重复评估同一条规则。
-_DISKS_ARRAY_KEY = "disks"
+# 巡检脚本输出 JSON 顶层声明「按数组展开」的特殊键名集合(2026-09-16 晚扩展)。
+# 适用场景:脚本把每个磁盘 / 接口 / 分区 / Web 应用输出一条结构化记录,顶层用
+# ``{"disks":[{...}]}`` 或 ``{"web_apps":[{...}]}`` 形式承载;评估器对声明的
+# 字段(如 ``disk_used_pct`` / ``web_app_cpu_pct``)在顶层缺失时,会按声明顺序
+# 遍历 _ARRAY_EXPANSION_KEYS,取第一个非空 list 数组,并对每个元素重复评估
+# 同一条规则。``disks`` 保留向后兼容;``web_apps`` 是 web-server 段(2026-09-16
+# 晚新增)的扁平化输出键。
+_ARRAY_EXPANSION_KEYS = ("web_apps", "disks")
 
 
 def _promote(current: str, candidate: str) -> str:
@@ -628,17 +631,21 @@ def _classify_single_value(
     return _evaluate_low(value_num, effective_warn, effective_crit)
 
 
-def _expand_disks_array(
+def _expand_array(
     rule: "InspectionFieldRule",
-    disks: List[Any],
+    entries: List[Any],
     *,
     allow_string: bool,
 ) -> Tuple[Tuple["InspectionFieldResult", ...], str]:
-    """把单条 ``high`` / ``low`` 规则应用到 ``disks`` 数组的每个元素。
+    """把单条 ``high`` / ``low`` 规则应用到数组的每个元素(2026-09-16 晚扩展)。
+
+    通用数组展开器:既支持 ``disks`` 数组(磁盘介质 SSD/HDD 阈值匹配),
+    也支持 ``web_apps`` 数组(Web 应用 CPU/内存/QPS/响应时间,无 ssd 阈值)。
+    顶层调用方先按 _ARRAY_EXPANSION_KEYS 顺序选中具体数组后再传入。
 
     Args:
         rule: 已规范化的字段规则; 调用方须保证 ``direction in ("high","low")``。
-        disks: 来自 ``parsed_values[_DISKS_ARRAY_KEY]`` 的数组。
+        entries: 来自 ``parsed_values[_ARRAY_EXPANSION_KEYS[i]]`` 的数组。
         allow_string: 是否允许字符串形式的有限数字(同 :func:`_coerce_parsed_number`)。
 
     Returns:
@@ -646,16 +653,21 @@ def _expand_disks_array(
         数组为空时返回 ``((), "crit")``, 供调用方决定是否要降级为单条
         ``crit`` 占位。
 
-    介质匹配:
+    介质匹配(仅 disks 路径生效):
         元素携带 ``disk_type`` 字段(``"ssd"`` / ``"hdd"`` / 其它)且
         规则声明 ``ssd_warn / ssd_crit`` 时: ``disk_type == "ssd"`` 走
         SSD 阈值, 其它(含缺失 / 未知 / ``"hdd"``)兜底 base warn/crit;
         规则未声明 ssd 阈值时一律回退 base。``InspectionFieldResult.warn``
         / ``crit`` 始终写入「有效阈值」(供前端展示介质匹配后的实际生效值)。
+
+    message 上下文(2026-09-16 晚扩展):
+        元素携带 ``mount`` 字段 → ``"磁盘 <mount>"``(disks 路径);
+        元素携带 ``app_name`` 字段 → ``"应用 <app_name>"``(web_apps 路径)。
+        都没有 → 空 message。
     """
     results: List[InspectionFieldResult] = []
     worst = "pass"
-    for entry in disks:
+    for entry in entries:
         if not isinstance(entry, Mapping):
             # 非 Mapping 元素 (例如脚本误输出字符串 / 数字) 跳过,
             # 不污染整体结果; 不计入 worst。
@@ -678,10 +690,15 @@ def _expand_disks_array(
             rule, raw_value, allow_string=allow_string,
             warn=effective_warn, crit=effective_crit,
         )
-        mount = entry.get("mount")
+        # 2026-09-16 晚:message 上下文按元素类型分支,disks 走 mount,web_apps 走 app_name
         message = ""
+        mount = entry.get("mount")
         if isinstance(mount, str) and mount:
             message = f"磁盘 {mount}"
+        else:
+            app_name = entry.get("app_name")
+            if isinstance(app_name, str) and app_name:
+                message = f"应用 {app_name}"
         results.append(
             InspectionFieldResult(
                 key=rule.key,
@@ -696,6 +713,10 @@ def _expand_disks_array(
         )
         worst = _promote(worst, status)
     return tuple(results), worst
+
+
+# 向后兼容别名:旧版 _expand_disks_array 引用(若有第三方调用)继续可用。
+_expand_disks_array = _expand_array
 
 
 def evaluate_inspection_fields(
@@ -831,13 +852,22 @@ def evaluate_inspection_fields(
             continue
 
         if r.key not in structured_values:
-            # 顶层字段缺失时, 检查是否存在 ``disks`` 数组, 若有则按数组
-            # 展开评估; 没有再按「字段缺失」返回 crit。
-            disks_value = structured_values.get(_DISKS_ARRAY_KEY)
-            if isinstance(disks_value, list):
-                expanded, worst_status = _expand_disks_array(
+            # 顶层字段缺失时, 按 _ARRAY_EXPANSION_KEYS 顺序遍历候选数组,
+            # 取第一个非空 list 展开评估;都未命中再按「字段缺失」返回 crit。
+            # 2026-09-16 晚扩展:从单 _DISKS_ARRAY_KEY 升级为多键元组,
+            # 支持 web-server 段的 web_apps 数组展开。
+            expansion_value = None
+            expansion_key = None
+            for cand_key in _ARRAY_EXPANSION_KEYS:
+                cand_value = structured_values.get(cand_key)
+                if isinstance(cand_value, list):
+                    expansion_value = cand_value
+                    expansion_key = cand_key
+                    break
+            if expansion_value is not None:
+                expanded, worst_status = _expand_array(
                     r,
-                    disks_value,
+                    expansion_value,
                     allow_string=normalized_parser in ("kv", "csv"),
                 )
                 if expanded:
@@ -854,7 +884,7 @@ def evaluate_inspection_fields(
                         value=None,
                         status="crit",
                         message=(
-                            f"字段 {r.key} 在解析结果中缺失(disks 数组"
+                            f"字段 {r.key} 在解析结果中缺失({expansion_key} 数组"
                             f"为空或所有元素均不含 {r.key})"
                         ),
                         warn=r.warn,

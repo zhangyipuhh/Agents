@@ -158,6 +158,110 @@ LOAD=$(cat /proc/loadavg | awk '{print $1}')
 printf '{"cpu_idle_pct":%s,"cpu_iowait_pct":%s,"load_1m":%s}\n' "$CPU_IDLE" "$CPU_IOWAIT" "$LOAD"
 """
 
+_LINUX_WEB_SERVER_SCRIPT = r"""#!/bin/bash
+set -u
+# Web 服务器分段(2026-09-16 晚新增):扫描本机所有 Tomcat 实例,
+# 列出每个 Web 应用的状态 + 进程级 CPU/内存 + 端口 + worker 数 + 简易健康度。
+#
+# 扫描策略:
+#   1) 常见安装路径枚举(/opt /usr/local /var/lib /home /root /srv),
+#      找含 catalina.sh 的目录作为 CATALINA_HOME;
+#   2) systemd unit 兜底(systemctl list-unit-files | grep -i tomcat);
+#   3) 重复的 path 去重(同一 Tomcat 被多次发现时按 path 唯一)。
+#
+# 端口发现:从 server.xml 解析 <Connector port="N" ...> 的第一个 port 属性;
+# 缺失时 fallback 8080。
+#
+# 应用枚举:ls $CATALINA_HOME/webapps/ 目录(排除 ROOT 与目录外的 war 源文件),
+# 对每个应用查进程是否存在(JPS 不可用时退到 ps -ef | grep 拿 tomcat pid)。
+#
+# 指标采集:进程级 CPU/内存用 ps -o pcpu,rss -p <pid>;QPS/响应时间无
+# JMX 时降级 0(null/0 不算异常,与 nginx access log 解析留待后续扩展)。
+#
+# 输出形态(扁平化 web_apps 数组,评估器走 _ARRAY_EXPANSION_KEYS 路径):
+#   {"web_apps":[
+#     {"app_name":"ROOT","server_type":"tomcat","host":"tomcat@8080",
+#      "port":8080,"status":"running","worker_count":200,
+#      "web_app_qps":0.0,"web_app_avg_response_ms":0.0,
+#      "web_app_cpu_pct":3.2,"web_app_mem_mb":512,
+#      "jvm_heap_used_pct":null},
+#     ...
+#   ]}
+#
+# 元素键名与 inspection_fields 规则 key 一致(web_app_*),便于评估器按
+# _expand_array 路径对每个元素重复评估同一条规则。
+# 仅使用老版 POSIX 语法(避免 bash4+ 进程替换),与既有约束一致。
+APPS_JSON=""
+SEP=""
+# 路径枚举:在常见安装根找 catalina.sh
+CANDIDATES=$(for d in /opt /usr/local /var/lib /home /root /srv; do
+  if [ -d "$d" ]; then
+    find "$d" -maxdepth 5 -name catalina.sh -type f 2>/dev/null
+  fi
+done)
+# systemd 兜底(若存在)
+if command -v systemctl >/dev/null 2>&1; then
+  while read -r unit; do
+    [ -z "$unit" ] && continue
+    exec_path=$(systemctl show "$unit" 2>/dev/null | grep -i '^ExecStart=' | head -1 | sed -e 's/^ExecStart=//' -e 's/ .*//')
+    if [ -n "$exec_path" ]; then
+      # 形如 /opt/tomcat/bin/catalina.sh → 退到 CATALINA_HOME
+      bin_dir=$(dirname "$exec_path" 2>/dev/null)
+      home_dir=$(dirname "$bin_dir" 2>/dev/null)
+      if [ -f "$home_dir/bin/catalina.sh" ]; then
+        echo "$home_dir/bin/catalina.sh"
+      fi
+    fi
+  done <<< "$(systemctl list-unit-files 2>/dev/null | awk '/[Tt]omcat/{print $1}')"
+fi
+TOMCATS=$(printf '%s\n' "$CANDIDATES" | sort -u)
+TOMCAT_COUNT=0
+APP_COUNT=0
+for cat_sh in $TOMCATS; do
+  CATALINA_HOME=$(dirname "$(dirname "$cat_sh")")
+  [ -d "$CATALINA_HOME/webapps" ] || continue
+  # 端口发现:server.xml 第一个 Connector 的 port 属性(简单 awk 正则)
+  PORT=$(awk 'tolower($0) ~ /<connector/ {
+    match($0, /port="[0-9]+"/); if (RSTART) { print substr($0, RSTART+6, RLENGTH-7); exit }
+  }' "$CATALINA_HOME/conf/server.xml" 2>/dev/null)
+  PORT=${PORT:-8080}
+  # tomcat 进程 PID:ps -ef 找包含 catalina.home 路径的进程
+  PID=$(ps -ef 2>/dev/null | awk -v home="$CATALINA_HOME" '$0 ~ home && $0 ~ /catalina/ && $0 !~ /awk/ {print $2; exit}')
+  # 进程级 CPU/内存(RSS KB → MB)
+  if [ -n "$PID" ] && [ "$PID" != "0" ]; then
+    PROC_LINE=$(ps -o pcpu= -o rss= -p "$PID" 2>/dev/null | tr -s ' ')
+    CPU_PCT=$(echo "$PROC_LINE" | awk '{print $1+0}')
+    MEM_MB=$(echo "$PROC_LINE" | awk '{printf "%.0f", $2/1024}')
+    STATUS="running"
+  else
+    CPU_PCT="0"
+    MEM_MB="0"
+    STATUS="stopped"
+  fi
+  HOST="tomcat@${PORT}"
+  # 应用枚举:webapps/ 下每个子目录名(排除 ROOT 之外的非应用如 work / docs);
+  # 简化策略:只取目录,且目录里有 WEB-INF/web.xml 的才视为 Web 应用。
+  for app_dir in "$CATALINA_HOME/webapps"/*; do
+    [ -d "$app_dir" ] || continue
+    name=$(basename "$app_dir")
+    case "$name" in
+      work|docs|examples|host-manager|manager) continue ;;  # 排除 tomcat 自带非业务目录
+    esac
+    if [ -f "$app_dir/WEB-INF/web.xml" ] || [ -d "$app_dir/WEB-INF" ]; then
+      APP_COUNT=$((APP_COUNT+1))
+      APP_STATUS="$STATUS"
+      APP_CPU="$CPU_PCT"
+      APP_MEM="$MEM_MB"
+      # 简化版:每 Tomcat 所有应用共享进程级 CPU/内存;QPS/响应时间无 JMX 时固定 0
+      APPS_JSON="${APPS_JSON}${SEP}{\"app_name\":\"${name}\",\"server_type\":\"tomcat\",\"host\":\"${HOST}\",\"port\":${PORT},\"status\":\"${APP_STATUS}\",\"worker_count\":200,\"web_app_qps\":0.0,\"web_app_avg_response_ms\":0.0,\"web_app_cpu_pct\":${APP_CPU},\"web_app_mem_mb\":${APP_MEM},\"jvm_heap_used_pct\":null}"
+      SEP=","
+    fi
+  done
+  TOMCAT_COUNT=$((TOMCAT_COUNT+1))
+done
+printf '{"web_apps":[%s],"tomcat_count":%s,"app_count":%s}\n' "$APPS_JSON" "$TOMCAT_COUNT" "$APP_COUNT"
+"""
+
 # Windows 单引号字符串中不能出现单引号,因此用 [CHAR39] 占位,在执行前替换。
 # 这是为了在保持 PowerShell 兼容(避免双引号转义陷阱)的同时,允许脚本内嵌
 # 含单引号的字符串(如 Replace('\', '\\') 中的反斜杠需要双写)。
@@ -274,6 +378,113 @@ try {
 Write-Output ('{"cpu_used_pct":'+[int]$cpu+',"cpu_iowait_pct":'+$iw+'}')
 """
 
+# 2026-09-16 晚:Windows web-server 段(JS 复合 PowerShell 字符串允许单引号),
+# 扫描 IIS Site + AppPool + WebApplication,以及 Tomcat(服务或注册表路径)。
+# 扁平化 web_apps 数组,走评估器 _ARRAY_EXPANSION_KEYS 路径。
+_WINDOWS_WEB_SERVER_SCRIPT = r"""$appsJson=@()
+$sep=''
+# === IIS 部分 ===
+$iisOk=$false
+try {
+  Import-Module WebAdministration -ErrorAction Stop
+  $iisOk=$true
+} catch {}
+if ($iisOk) {
+  try {
+    $totalQps=0.0
+    try { $totalQps=[double](Get-Counter -Counter '\Web Service(_Total)\Current Connections' -ErrorAction SilentlyContinue).CounterSamples[0].CookedValue } catch {}
+    $sites=@(Get-Website -ErrorAction SilentlyContinue)
+    foreach ($s in $sites) {
+      $siteName=[string]$s.Name
+      $bindings=[string]$s.Bindings
+      $portMatch=[regex]::Match($bindings, ':(\d+)\b')
+      $port=if ($portMatch.Success) { [int]$portMatch.Groups[1].Value } else { 80 }
+      $state=[string]$s.State
+      $status=if ($state -eq 'Started') { 'running' } else { 'stopped' }
+      $webApps=@(Get-WebApplication -Site $siteName -ErrorAction SilentlyContinue)
+      $appNames=@()
+      if ($webApps.Count -gt 0) {
+        foreach ($wa in $webApps) { $appNames += [string]$wa.Path.TrimStart('/') }
+      }
+      if ($appNames.Count -eq 0) { $appNames = @($siteName) }
+      $pools=@(Get-WebAppPoolState -Name $siteName -ErrorAction SilentlyContinue)
+      $workerCount=if ($pools.Count -gt 0) { $pools.Count } else { 1 }
+      $procs=@()
+      try { $procs=@(Get-Process -Name w3wp -ErrorAction SilentlyContinue) } catch {}
+      $cpuSum=0.0; $memSum=0L; $procCount=0
+      foreach ($pp in $procs) {
+        try { $cpuSum+=[double]$pp.CPU; $memSum+=[int64]$pp.WorkingSet64; $procCount++ } catch {}
+      }
+      $appCpu=0.0; $appMem=0
+      if ($procCount -gt 0) { $appCpu=[math]::Round($cpuSum/$procCount, 1); $appMem=[int]([math]::Round($memSum/$procCount/1MB)) }
+      $appQps=[math]::Round($totalQps, 1)
+      $appResp=0.0
+      try {
+        $resp=[double](Get-Counter -Counter '\Web Service(_Total)\Bytes Total/sec' -ErrorAction SilentlyContinue).CounterSamples[0].CookedValue
+        if ($appQps -gt 0 -and $resp -gt 0) { $appResp=[math]::Round($resp/$appQps*1000, 1) }
+      } catch {}
+      foreach ($an in $appNames) {
+        if ([string]::IsNullOrWhiteSpace($an)) { $an=$siteName }
+        $appsJson += ($sep+'{"app_name":"'+$an+'","server_type":"iis","host":"iis@'+$port+'","port":'+[int]$port+',"status":"'+$status+'","worker_count":'+[int]$workerCount+',"web_app_qps":'+[double]$appQps+',"web_app_avg_response_ms":'+[double]$appResp+',"web_app_cpu_pct":'+[double]$appCpu+',"web_app_mem_mb":'+[int]$appMem+',"jvm_heap_used_pct":null}')
+        $sep=','
+      }
+    }
+  } catch {}
+}
+# === Tomcat 部分(服务或注册表) ===
+$tomcatHomes=@()
+try {
+  $regPaths=@('HKLM:\SOFTWARE\Apache Software Foundation\Tomcat\*','HKLM:\SOFTWARE\Wow6432Node\Apache Software Foundation\Tomcat\*')
+  foreach ($rp in $regPaths) {
+    $items=@(Get-ItemProperty -Path $rp -ErrorAction SilentlyContinue)
+    foreach ($it in $items) {
+      if ($it.'InstallPath') { $tomcatHomes += [string]$it.'InstallPath' }
+    }
+  }
+} catch {}
+try {
+  $svcHomes=@(Get-WmiObject Win32_Service | Where-Object { $_.Name -like '*Tomcat*' -or $_.DisplayName -like '*Tomcat*' } | ForEach-Object { Split-Path -Parent (Split-Path -Parent $_.PathName) } | Sort-Object -Unique)
+  foreach ($h in $svcHomes) { if ($h) { $tomcatHomes += $h } }
+} catch {}
+$tomcatHomes=$tomcatHomes | Sort-Object -Unique
+foreach ($home in $tomcatHomes) {
+  $binPath=Join-Path $home 'bin\catalina.bat'
+  $confPath=Join-Path $home 'conf\server.xml'
+  $webappsPath=Join-Path $home 'webapps'
+  if (-not (Test-Path $webappsPath)) { continue }
+  $port=8080
+  if (Test-Path $confPath) {
+    try {
+      $xml=[xml](Get-Content $confPath -Raw)
+      $conn=$xml.Server.Service.Connector | Where-Object { $_.port } | Select-Object -First 1
+      if ($conn -and $conn.port) { $port=[int]$conn.port }
+    } catch {}
+  }
+  $host="tomcat@$port"
+  $pid=(Get-Process -Name java -ErrorAction SilentlyContinue | Select-Object -First 1).Id
+  $status='stopped'; $appCpu=0.0; $appMem=0
+  if ($pid) {
+    $status='running'
+    try {
+      $p=Get-Process -Id $pid -ErrorAction Stop
+      $appCpu=[math]::Round([double]$p.CPU, 1)
+      $appMem=[int][math]::Round([double]$p.WorkingSet64/1MB)
+    } catch {}
+  }
+  $dirs=@(Get-ChildItem -Path $webappsPath -Directory -ErrorAction SilentlyContinue)
+  foreach ($d in $dirs) {
+    $name=$d.Name
+    if ($name -in @('work','docs','examples','host-manager','manager')) { continue }
+    $webInf=Join-Path $d.FullName 'WEB-INF'
+    if ((Test-Path $webInf) -or (Test-Path (Join-Path $webInf 'web.xml'))) {
+      $appsJson += ($sep+'{"app_name":"'+$name+'","server_type":"tomcat","host":"'+$host+'","port":'+[int]$port+',"status":"'+$status+'","worker_count":200,"web_app_qps":0.0,"web_app_avg_response_ms":0.0,"web_app_cpu_pct":'+[double]$appCpu+',"web_app_mem_mb":'+[int]$appMem+',"jvm_heap_used_pct":null}')
+      $sep=','
+    }
+  }
+}
+Write-Output ('{"web_apps":['+(($appsJson) -join '')+'],"web_app_count":'+$appsJson.Count+'}')
+"""
+
 _LINUX_FIELDS = [
     {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
     {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
@@ -284,6 +495,12 @@ _LINUX_FIELDS = [
     {"key": "load_1m", "name_zh": "1 分钟平均负载", "unit": "", "direction": "high", "warn": 4.0, "crit": 8.0},
     {"key": "io_util_pct", "name_zh": "磁盘 IO 利用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
     {"key": "io_await_ms", "name_zh": "磁盘 IO 平均等待", "unit": "ms", "direction": "high", "warn": 100, "crit": 200, "ssd_warn": 20, "ssd_crit": 50},
+    # 2026-09-16 晚:web-server 段新增 4 条规则;顶层声明 + 数组展开(web_apps[])
+    # 走与 disks[] 同样的 _ARRAY_EXPANSION_KEYS 评估器路径。
+    {"key": "web_app_cpu_pct", "name_zh": "Web 应用 CPU 占比", "unit": "%", "direction": "high", "warn": 60, "crit": 85},
+    {"key": "web_app_mem_mb", "name_zh": "Web 应用内存占用", "unit": "MB", "direction": "high", "warn": 2048, "crit": 4096},
+    {"key": "web_app_qps", "name_zh": "Web 应用 QPS", "unit": "req/s", "direction": "high", "warn": 5000, "crit": 10000},
+    {"key": "web_app_avg_response_ms", "name_zh": "Web 应用平均响应时间", "unit": "ms", "direction": "high", "warn": 500, "crit": 2000},
 ]
 
 _WINDOWS_FIELDS = [
@@ -295,6 +512,11 @@ _WINDOWS_FIELDS = [
     {"key": "inode_used_pct", "name_zh": "MFT 使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
     {"key": "io_util_pct", "name_zh": "磁盘 IO 利用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
     {"key": "io_await_ms", "name_zh": "磁盘 IO 平均等待", "unit": "ms", "direction": "high", "warn": 100, "crit": 200, "ssd_warn": 20, "ssd_crit": 50},
+    # 2026-09-16 晚:web-server 段 IIS + Tomcat 共用 4 条规则;与 Linux 同形。
+    {"key": "web_app_cpu_pct", "name_zh": "Web 应用 CPU 占比", "unit": "%", "direction": "high", "warn": 60, "crit": 85},
+    {"key": "web_app_mem_mb", "name_zh": "Web 应用内存占用", "unit": "MB", "direction": "high", "warn": 2048, "crit": 4096},
+    {"key": "web_app_qps", "name_zh": "Web 应用 QPS", "unit": "req/s", "direction": "high", "warn": 5000, "crit": 10000},
+    {"key": "web_app_avg_response_ms", "name_zh": "Web 应用平均响应时间", "unit": "ms", "direction": "high", "warn": 500, "crit": 2000},
 ]
 
 
@@ -326,6 +548,8 @@ DEFAULT_INSPECTION_GROUPS = [
             {"segment_key": "disk-io", "display_name": "磁盘 IO 与介质", "sort_order": 20, "script": _LINUX_DISK_IO_SCRIPT},
             {"segment_key": "memory", "display_name": "内存与交换分区", "sort_order": 30, "script": _LINUX_MEMORY_SCRIPT},
             {"segment_key": "cpu", "display_name": "CPU 与负载", "sort_order": 40, "script": _LINUX_CPU_SCRIPT},
+            # 2026-09-16 晚:web-server 分段(Tomcat 扫描,扁平化 web_apps 数组)
+            {"segment_key": "web-server", "display_name": "Web 服务器(Tomcat)", "sort_order": 50, "script": _LINUX_WEB_SERVER_SCRIPT},
         ],
     },
     {
@@ -340,6 +564,8 @@ DEFAULT_INSPECTION_GROUPS = [
             {"segment_key": "disk-io", "display_name": "磁盘 IO 与介质", "sort_order": 20, "script": _restore_quotes(_WINDOWS_DISK_IO_SCRIPT)},
             {"segment_key": "memory", "display_name": "内存与页面文件", "sort_order": 30, "script": _restore_quotes(_WINDOWS_MEMORY_SCRIPT)},
             {"segment_key": "cpu", "display_name": "CPU 与中断/DPC", "sort_order": 40, "script": _restore_quotes(_WINDOWS_CPU_SCRIPT)},
+            # 2026-09-16 晚:web-server 分段(IIS + Tomcat 扫描,扁平化 web_apps 数组)
+            {"segment_key": "web-server", "display_name": "Web 服务器(IIS+Tomcat)", "sort_order": 50, "script": _WINDOWS_WEB_SERVER_SCRIPT},
         ],
     },
 ]

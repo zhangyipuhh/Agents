@@ -12,6 +12,8 @@ services:
     environment:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: /app
+      # 2026-09-16 时区改造:容器时区显式声明,镜像 ENV 兜底
+      TZ: Asia/Shanghai
     env_file:
       - .env
     volumes:

@@ -114,6 +114,10 @@ const serversLoadError = ref('')
  *     swap_used_pct / inode_used_pct（linux/windows 双平台均采集，缺失 → null）；
  *   - ``load`` 为 linux 1 分钟平均负载原始数值（非百分比），windows → null；
  *   - ``disks`` 由 ``parsed_values.disks`` 映射（mount → name，disk_used_pct → used）；
+ *   - ``webApps`` 由 ``parsed_values.web_apps`` 映射（2026-09-16 晚：web-server
+ *     段新增；扁平化数组，每个 web 应用为一条记录，含 app_name / server_type /
+ *     web_app_cpu_pct / web_app_mem_mb / web_app_qps / web_app_avg_response_ms
+ *     等字段），供 OpsServerWindow 卡片 web 服务器行 + OpsDetailWindow 详情页分组展示；
  *   - ``ip`` 不返（遵循脱敏约定）→ ``-``。
  *
  * @param {Object} item 后端返回的快照行
@@ -122,6 +126,8 @@ const serversLoadError = ref('')
 function mapSnapshotToServer(item) {
   const pv = (item && item.parsed_values) || {}
   const disks = Array.isArray(pv.disks) ? pv.disks : []
+  // 2026-09-16 晚:web-server 段输出 web_apps 数组,扁平化透出供卡片/详情页消费
+  const webApps = Array.isArray(pv.web_apps) ? pv.web_apps : []
   return {
     id: item.server_id,
     nodeId: item.node_id,
@@ -157,6 +163,21 @@ function mapSnapshotToServer(item) {
       diskIndex: typeof d.disk_index === 'number' ? d.disk_index : null,
       partition: d.partition || '',
       total: '-',
+    })),
+    // 2026-09-16 晚:web-server 段 web_apps 数组扁平化透出,每个 web 应用
+    // 保留完整字段(app_name / server_type / port / status + 4 个 web_app_* 指标)。
+    webApps: webApps.map(a => ({
+      appName: a.app_name || '-',
+      serverType: a.server_type || '',
+      host: a.host || '',
+      port: typeof a.port === 'number' ? a.port : null,
+      status: a.status || 'unknown',
+      workerCount: typeof a.worker_count === 'number' ? a.worker_count : null,
+      webAppQps: a.web_app_qps ?? null,
+      webAppAvgResponseMs: a.web_app_avg_response_ms ?? null,
+      webAppCpuPct: a.web_app_cpu_pct ?? null,
+      webAppMemMb: a.web_app_mem_mb ?? null,
+      jvmHeapUsedPct: a.jvm_heap_used_pct ?? null,
     })),
     // 2026-08-16：透传后端每字段评估结果（由 inspection_scripts.yaml warn/crit
     // 评估后的 pass/warn/crit/unassessed 状态数组），供卡片异常盘符判定。

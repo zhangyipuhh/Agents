@@ -225,6 +225,85 @@ export function formatAnomalyItem(item) {
   if (item.unit === 'ms') return `${short} ${v}ms`
   return `${short} ${v}${item.unit || ''}`
 }
+
+// ============================== 2026-09-16 晚:web 服务器摘要 ==============================
+
+/**
+ * 2026-09-16 晚:Web 应用负载阈值(web_app_cpu_pct 同 disk_used_pct 口径:warn 60 / crit 85),
+ * 卡片行展示最高负载应用时按此阈值染色。
+ */
+export const WEB_APP_CPU_WARN = 60
+export const WEB_APP_CPU_CRIT = 85
+
+/**
+ * 2026-09-16 晚:Web 应用 CPU 着色(独立阈值,与磁盘 80/90 解耦)。
+ *   - null / 非数字 → 灰色(未采集)
+ *   - < WEB_APP_CPU_WARN → 绿色
+ *   - WARN..<CRIT → 黄色
+ *   - ≥ CRIT → 红色
+ *
+ * @param {number|null|undefined} v CPU 占比数值(0-100)
+ * @returns {string} 颜色字符串
+ */
+export function webAppCpuColor(v) {
+  if (v == null || typeof v !== 'number') return '#9aa3af'
+  if (v >= WEB_APP_CPU_CRIT) return '#ff453a'
+  if (v >= WEB_APP_CPU_WARN) return '#f59e0b'  // 黄色,介于 warn/crit
+  return '#1d9a40'
+}
+
+/**
+ * 2026-09-16 晚:Web 服务器摘要智能挑选函数(供 OpsServerWindow 卡片行展示)。
+ *
+ * 行为:
+ *   1) 数组为空 / 缺失 → 返回 ``null``(卡片显示 ``-``)
+ *   2) 否则按 ``webAppCpuPct`` 降序取第一条(最高负载应用);
+ *      ``webAppCpuPct`` 缺失/null 的项视为 ``-Infinity`` 排到末尾
+ *   3) 统计 server_type 分布(tomcat / iis 数量)
+ *   4) 统计 stopped 状态应用数(运维关注)
+ *
+ * @param {Array} webApps 后端 web_apps 数组映射后的 ServerItem.webApps 列表
+ * @returns {{appName:string, serverType:string, cpuPct:number|null,
+ *             appCount:number, tomcatCount:number, iisCount:number,
+ *             stoppedCount:number, hasApps:boolean}|null}
+ *          无应用时返回 ``null``;否则返回摘要对象
+ */
+export function pickWebAppSummary(webApps) {
+  if (!Array.isArray(webApps) || webApps.length === 0) return null
+
+  let tomcatCount = 0
+  let iisCount = 0
+  let stoppedCount = 0
+  for (const a of webApps) {
+    if (!a) continue
+    const st = (a.serverType || '').toLowerCase()
+    if (st === 'tomcat') tomcatCount += 1
+    else if (st === 'iis') iisCount += 1
+    if ((a.status || '').toLowerCase() === 'stopped') stoppedCount += 1
+  }
+
+  // 排序:按 webAppCpuPct 降序,缺失/非数字排末尾
+  const sorted = [...webApps]
+    .filter(a => a != null)
+    .sort((x, y) => {
+      const xv = (typeof x.webAppCpuPct === 'number') ? x.webAppCpuPct : -Infinity
+      const yv = (typeof y.webAppCpuPct === 'number') ? y.webAppCpuPct : -Infinity
+      return yv - xv
+    })
+  const top = sorted[0]
+  if (!top) return null
+
+  return {
+    appName: top.appName || '-',
+    serverType: top.serverType || '',
+    cpuPct: typeof top.webAppCpuPct === 'number' ? top.webAppCpuPct : null,
+    appCount: webApps.length,
+    tomcatCount,
+    iisCount,
+    stoppedCount,
+    hasApps: true,
+  }
+}
 </script>
 
 <script setup>
@@ -433,6 +512,35 @@ function fmtPct(v) {
           <div v-if="isLinuxType(srv.serverType)" class="srv-metric">
             <span class="srv-metric-label">服务器负载</span>
             <span class="srv-metric-value" :style="{ color: loadColor(srv.load) }">{{ fmtNum(srv.load) }}</span>
+          </div>
+          <!-- 2026-09-16 晚:web 服务器行(独立于磁盘行,放最后)
+               - pickWebAppSummary 智能挑选:按 webAppCpuPct 降序取第一条
+               - 文案:N 个应用(M 个 Tomcat / K 个 IIS) · 最高负载: <app_name> <cpu>%
+               - 颜色按 webAppCpuColor 阈值(WARN 60 / CRIT 85)独立染色
+               - 无应用时显示 '-' -->
+          <div class="srv-metric">
+            <span class="srv-metric-label">Web 服务器</span>
+            <template v-if="pickWebAppSummary(srv.webApps)">
+              <span class="srv-metric-webapp-summary">
+                <span class="srv-metric-value">
+                  {{ pickWebAppSummary(srv.webApps).appCount }} 个应用
+                </span>
+                <span class="srv-metric-webapp-types">
+                  ({{ pickWebAppSummary(srv.webApps).tomcatCount }} Tomcat
+                  <template v-if="pickWebAppSummary(srv.webApps).iisCount > 0">
+                    / {{ pickWebAppSummary(srv.webApps).iisCount }} IIS
+                  </template>)
+                </span>
+                <span class="srv-metric-webapp-divider">·</span>
+                <span class="srv-metric-value"
+                      :style="{ color: webAppCpuColor(pickWebAppSummary(srv.webApps).cpuPct) }">
+                  最高负载: {{ pickWebAppSummary(srv.webApps).appName }} {{ fmtPct(pickWebAppSummary(srv.webApps).cpuPct) }}
+                </span>
+              </span>
+            </template>
+            <template v-else>
+              <span class="srv-metric-value" :style="{ color: metricColor(null) }">-</span>
+            </template>
           </div>
         </div>
       </div>

@@ -47,6 +47,7 @@ from app.shared.tools.skills.map_agent.config import (
     get_report_config,
     ProjectSiteSelectionCollection,
 )
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16: 字符串/日期/参数用北京
 
 
 @tool(description="设置地图中心点坐标")
@@ -957,7 +958,7 @@ def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
     session_id = runtime.context.get("session_id", "default_session")
 
     # 准备报告数据
-    current_time = datetime.now()
+    current_time = now_asia_shanghai_naive()
     report_data = {
         "项目名称": data.project_name,
         "生成日期": current_time.strftime("%Y年%m月%d日"),
@@ -1311,7 +1312,7 @@ async def save_business_info(input_data: SaveBusinessInfoInput, runtime: ToolRun
         )
         writer(dict(progress_event_2))
 
-        date_str = datetime.now().strftime("%Y%m%d")
+        date_str = now_asia_shanghai_naive().strftime("%Y%m%d")
         business_no = ""
 
         if DatabasePool.is_enabled():
@@ -1360,7 +1361,7 @@ async def save_business_info(input_data: SaveBusinessInfoInput, runtime: ToolRun
                 input_data.contact_phone,
                 input_data.unit_address,
                 session_id,
-                datetime.now()
+                now_asia_shanghai_naive()
             )
 
         result_data = {

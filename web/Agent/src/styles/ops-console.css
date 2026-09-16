@@ -325,6 +325,20 @@
 .ops-console-root .srv-metric-storage {
   flex-wrap: wrap;
 }
+/* 2026-09-16 晚:Web 服务器行(web-server 段 2026-09-16 落地,卡片新增一行)
+   - 摘要容器允许 flex-wrap 自动换行,文本与磁盘行视觉对齐
+   - 数量标签用主色突出,类型分布灰色,divider「·」视觉分隔
+   - 「最高负载: <app> <cpu>%」用 webAppCpuColor 阈值(60/85)独立染色 */
+.ops-console-root .srv-metric-webapp-summary {
+  display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  font-size: 12px; color: #5a6f9c;
+}
+.ops-console-root .srv-metric-webapp-types {
+  color: #7a8db3; font-size: 11px;
+}
+.ops-console-root .srv-metric-webapp-divider {
+  color: #b8c4dc; font-weight: 600; margin: 0 2px;
+}
 .ops-console-root .srv-metric-value {
   font-weight: 600; font-variant-numeric: tabular-nums;
 }
@@ -454,6 +468,54 @@
 .ops-console-root .disk-empty {
   font-size: 12px; color: #7a8db3; padding: 8px 0;
 }
+
+/* ===== 2026-09-16 晚:Web 应用分组(详情页) ===== */
+/* 复用 disk-section / disk-title / disk-groups 视觉对齐,独立作用域前缀避免污染 */
+.ops-console-root .webapp-section { margin-top: 4px; }
+.ops-console-root .webapp-title {
+  font-size: 13px; font-weight: 600; color: var(--gov-blue-deep);
+  padding: 8px 0 6px; border-bottom: 1px solid rgba(30, 106, 221, .12);
+  display: flex; align-items: center; gap: 8px;
+}
+.ops-console-root .webapp-badge {
+  font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 500;
+}
+.ops-console-root .webapp-badge.ok { background: rgba(48, 209, 88, .15); color: #1d9a40; }
+.ops-console-root .webapp-badge.err { background: rgba(255, 69, 58, .15); color: #ff453a; }
+.ops-console-root .webapp-groups {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 0;
+}
+.ops-console-root .webapp-pcard {
+  background: rgba(234, 242, 253, .35);
+  border: 1px solid rgba(30, 106, 221, .12);
+  border-radius: 6px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ops-console-root .webapp-pcard-head {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding-bottom: 4px; border-bottom: 1px solid rgba(30, 106, 221, .08);
+}
+.ops-console-root .wap-name {
+  font-size: 12px; font-weight: 600; color: var(--gov-blue-deep);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px;
+}
+.ops-console-root .wap-type {
+  font-size: 10px; padding: 1px 5px; border-radius: 4px; font-weight: 600; flex-shrink: 0;
+}
+.ops-console-root .wap-type--tomcat { background: rgba(255, 159, 10, .15); color: #b3530c; }
+.ops-console-root .wap-type--iis    { background: rgba(30, 106, 221, .18); color: var(--gov-blue-deep); }
+.ops-console-root .wap-type--unknown { background: rgba(122, 141, 179, .18); color: #5a6f9c; }
+.ops-console-root .wap-port { font-size: 11px; color: #7a8db3; flex-shrink: 0; }
+.ops-console-root .wap-status {
+  font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-left: auto; flex-shrink: 0;
+}
+.ops-console-root .wap-status--running { background: rgba(48, 209, 88, .15); color: #1d9a40; }
+.ops-console-root .wap-status--stopped { background: rgba(255, 69, 58, .15); color: #ff453a; }
+.ops-console-root .wap-status--unknown { background: rgba(122, 141, 179, .18); color: #5a6f9c; }
+.ops-console-root .webapp-metrics {
+  display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 6px;
+}
+.ops-console-root .webapp-empty { font-size: 12px; color: #7a8db3; padding: 8px 0; }
 
 /* ===== 日志管理窗口 ===== */
 .ops-console-root .win-logs { width: 700px; height: 460px; display: flex; flex-direction: column; }

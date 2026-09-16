@@ -49,6 +49,7 @@ from app.core.agent.AgentConfig import (
 from app.core.config.config import LLM_CONFIG
 from app.core.messages import trim_old_tool_messages
 from app.core.prompts import BASE_SYSTEM_PROMPT
+from app.shared.utils.timezone import now_utc_aware  # 2026-09-16: SSE 事件时间戳带 +00:00
 
 
 class LLMInputState(TypedDict):
@@ -280,7 +281,8 @@ class Agent:
         new_record = {
             "questions": questions,
             "answers": answers,
-            "timestamp": datetime.now().isoformat()
+            # 2026-09-16: SSE 事件时间戳统一为 UTC ISO,前端按本地时区解析
+            "timestamp": now_utc_aware().isoformat(),
         }
         existing_raw = state.get("question_answers", [])
         existing = existing_raw.value if isinstance(existing_raw, Overwrite) else existing_raw

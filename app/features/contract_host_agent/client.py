@@ -28,6 +28,8 @@ from pathlib import Path
 import requests
 from requests.exceptions import RequestException
 
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -819,7 +821,7 @@ class ChatHistory:
         self.history.append({
             "role": role,
             "content": content,
-            "timestamp": timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": timestamp or now_asia_shanghai_naive().strftime("%Y-%m-%d %H:%M:%S")
         })
     
     def get_history(self) -> List[Dict[str, Any]]:

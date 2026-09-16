@@ -23,6 +23,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from app.shared.utils.timezone import now_asia_shanghai_naive  # 2026-09-16
+
 
 _PLACEHOLDER_RE = re.compile(
     r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\|\s*([^}]*)?)?\s*\}\}"
@@ -108,7 +110,8 @@ class EmailTemplateRenderer:
         """
         fmt = fmt or _DEFAULT_TIMESTAMP_FORMAT
         try:
-            return datetime.now().strftime(fmt)
+            # 2026-09-16: 邮件模板时间统一为北京
+            return now_asia_shanghai_naive().strftime(fmt)
         except (ValueError, KeyError):
             return f"{{{{timestamp|{fmt}}}}}"
 

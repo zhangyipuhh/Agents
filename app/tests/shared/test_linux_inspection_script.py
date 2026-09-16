@@ -88,8 +88,14 @@ def test_segments_output_keys_cover_declared_fields():
         # 从 printf 格式串提取顶层 JSON 键("key": 形态)
         produced |= set(re.findall(r'\\?"([a-z_0-9]+)\\?"\s*:', seg["script"]))
     produced.discard("disks")
+    produced.discard("web_apps")
     # disks 数组元素承载 disk_used_pct / io_util_pct / io_await_ms
-    produced |= {"disk_used_pct", "io_util_pct", "io_await_ms"}
+    # 2026-09-16 晚:web_apps 数组元素承载 web_app_cpu_pct / web_app_mem_mb /
+    # web_app_qps / web_app_avg_response_ms(均与 inspection_fields 规则 key 一致)
+    produced |= {
+        "disk_used_pct", "io_util_pct", "io_await_ms",
+        "web_app_cpu_pct", "web_app_mem_mb", "web_app_qps", "web_app_avg_response_ms",
+    }
     assert declared <= produced
 
 
@@ -280,3 +286,113 @@ def test_disk_usage_regression_std_dev():
     assert by_mount["/data2"]["partition"] == "nvme0n1p2"
     assert by_mount["/boot"]["host_disk"] == "mmcblk0"
     assert by_mount["/boot"]["partition"] == "mmcblk0p1"
+
+
+# ============================== 2026-09-16 晚:web-server 分段契约测试 ==============================
+
+
+def test_web_server_segment_scans_tomcat_paths():
+    """web-server 分段应扫描常见 Tomcat 安装路径并解析 server.xml / webapps。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 关键路径 / 关键词缺失时失败
+    """
+    script = _segment(_linux_group(), "web-server")["script"]
+    assert "catalina.sh" in script
+    assert "server.xml" in script
+    assert "webapps" in script
+    assert "/opt" in script
+    assert "/usr/local" in script
+
+
+def test_web_server_segment_outputs_web_apps_array_with_required_keys():
+    """web-server 分段输出 JSON 应含 web_apps 数组 + 必备字段。
+
+    2026-09-16 晚:元素键名与 inspection_fields 规则 key 对齐
+    (web_app_cpu_pct / web_app_mem_mb / web_app_qps / web_app_avg_response_ms),
+    便于评估器 _expand_array 路径按数组展开评估。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 输出键缺失时失败
+    """
+    script = _segment(_linux_group(), "web-server")["script"]
+    assert "web_apps" in script
+    # 必备元数据字段
+    for required in (
+        "app_name",
+        "server_type",
+        "host",
+        "port",
+        "status",
+        "worker_count",
+        "jvm_heap_used_pct",
+    ):
+        assert required in script, f"web-server 段输出缺元数据字段: {required}"
+    # 评估器契约:4 个 web_app_* 键名与 inspection_fields 规则 key 一致
+    for required in (
+        "web_app_cpu_pct",
+        "web_app_mem_mb",
+        "web_app_qps",
+        "web_app_avg_response_ms",
+    ):
+        assert required in script, f"web-server 段输出缺评估键: {required}"
+    assert '"server_type":"tomcat"' in script
+
+
+def test_web_server_segment_posix_only_no_bash4_process_substitution():
+    """web-server 分段必须保持 POSIX 兼容,禁止 bash4+ 进程替换 ``<(``。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 出现 bash4+ 语法时失败(沿用既有约束)
+    """
+    script = _segment(_linux_group(), "web-server")["script"]
+    assert "<(" not in script
+
+
+def test_web_server_segment_declares_segment_key_and_order():
+    """web-server 段必须在 linux-bash 组中以 segment_key=web-server 形式声明。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 段键缺失或未加入组时失败
+    """
+    group = _linux_group()
+    keys = [s["segment_key"] for s in group["segments"]]
+    assert "web-server" in keys
+    seg = _segment(group, "web-server")
+    assert seg["sort_order"] >= 40  # cpu 段是 40,web-server 排后面
+
+
+def test_linux_inspection_fields_includes_web_app_rules():
+    """linux-bash inspection_fields 必须含 4 条 web_app_* 规则。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 规则缺失时失败
+    """
+    group = _linux_group()
+    keys = {f["key"] for f in group["inspection_fields"]}
+    expected = {
+        "web_app_cpu_pct",
+        "web_app_mem_mb",
+        "web_app_qps",
+        "web_app_avg_response_ms",
+    }
+    assert expected <= keys
+    cpu_rule = next(f for f in group["inspection_fields"] if f["key"] == "web_app_cpu_pct")
+    assert cpu_rule["warn"] == 60
+    assert cpu_rule["crit"] == 85
+    assert cpu_rule["direction"] == "high"
